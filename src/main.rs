@@ -79,7 +79,9 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&storage_dir).await?;
     info!("Storage directory set to: {}", storage_dir);
 
-    let host_url = std::env::var("HOST_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let host_url = std::env::var("PUBLIC_URL")
+        .or_else(|_| std::env::var("HOST_URL"))
+        .unwrap_or_else(|_| "http://localhost:8080".to_string());
     let max_retries = std::env::var("MAX_RETRIES")
         .ok()
         .and_then(|val| val.parse().ok())
