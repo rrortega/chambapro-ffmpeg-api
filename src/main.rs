@@ -4,6 +4,7 @@ use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
+    Json,
     Router,
 };
 use reqwest::Client;
@@ -78,6 +79,7 @@ async fn convert_media(
     let mut input_file_opt: Option<NamedTempFile> = None;
     let mut url_opt: Option<String> = None;
     let mut headers_opt: Option<String> = None;
+    let mut callback_url_opt: Option<String> = None;
     let mut output_format = "mp3".to_string(); // default
 
     while let Some(mut field) = multipart.next_field().await.unwrap_or(None) {
@@ -105,6 +107,14 @@ async fn convert_media(
                     headers_opt = Some(h);
                 }
             }
+            "callback_url" => {
+                if let Ok(url) = field.text().await {
+                    let trimmed = url.trim();
+                    if !trimmed.is_empty() {
+                        callback_url_opt = Some(trimmed.to_string());
+                    }
+                }
+            }
             "output_format" => {
                 if let Ok(fmt) = field.text().await {
                     output_format = fmt;
@@ -122,6 +132,22 @@ async fn convert_media(
     } else {
         return Ok((StatusCode::BAD_REQUEST, "Missing 'file' or 'url' field").into_response());
     };
+
+    // Handle asynchronous callback (webhook) if callback_url is provided
+    if let Some(callback_url) = callback_url_opt {
+        let client = state.http_client.clone();
+        tokio::spawn(async move {
+            info!("Enqueued background conversion task targeting webhook: {}", callback_url);
+            if let Err(e) = process_and_callback(client, input_temp_file, callback_url, output_format).await {
+                error!("Background processing and callback webhook failed: {:?}", e);
+            }
+        });
+
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "enqueue": true })),
+        ).into_response());
+    }
 
     let output_temp_file = NamedTempFile::new()?;
     let out_path = output_temp_file.path().to_owned();
@@ -185,6 +211,49 @@ async fn download_file(client: &Client, url: &str, headers_json: Option<&str>) -
     f.flush().await?;
 
     Ok(temp_file)
+}
+
+async fn process_and_callback(
+    client: Client,
+    input_temp_file: NamedTempFile,
+    callback_url: String,
+    output_format: String,
+) -> anyhow::Result<()> {
+    let output_temp_file = NamedTempFile::new()?;
+    let out_path = output_temp_file.path().to_owned();
+
+    // Call ffmpeg
+    run_ffmpeg(input_temp_file.path(), &out_path, &output_format).await?;
+
+    // Stream the output file directly into the multipart request body (most optimized binary transfer)
+    let file = File::open(&out_path).await?;
+    let stream = ReaderStream::new(file);
+    let body = reqwest::Body::wrap_stream(stream);
+
+    let file_part = reqwest::multipart::Part::stream(body)
+        .file_name(format!("output.{}", output_format))
+        .mime_str(match output_format.as_str() {
+            "mp3" => "audio/mpeg",
+            "mp4" => "video/mp4",
+            "wav" => "audio/wav",
+            "ogg" => "audio/ogg",
+            "webm" => "video/webm",
+            _ => "application/octet-stream",
+        })?;
+
+    let form = reqwest::multipart::Form::new().part("file", file_part);
+
+    info!("Sending converted file via webhook to {}", callback_url);
+    let res = client.post(&callback_url).multipart(form).send().await?;
+    
+    let status = res.status();
+    if !status.is_success() {
+        let err_body = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        anyhow::bail!("Webhook callback to {} failed (status {}): {}", callback_url, status, err_body);
+    }
+    
+    info!("Webhook callback to {} successfully completed", callback_url);
+    Ok(())
 }
 
 async fn run_ffmpeg(input_path: &Path, output_path: &Path, format: &str) -> anyhow::Result<()> {

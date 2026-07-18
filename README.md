@@ -74,12 +74,13 @@ Converts media files to any target format supported by FFmpeg.
 - `url` (optional): A remote URL of the media file to download and convert.
 - `output_format` (optional, default: `mp3`): The desired output format extension (e.g., `mp3`, `mp4`, `wav`, `ogg`, `webm`).
 - `headers` (optional): A JSON string containing custom HTTP headers to pass when fetching the remote `url` (e.g. `{"Authorization": "Bearer token"}`).
+- `callback_url` (optional): A URL for asynchronous processing. If provided, the API returns a fast `202 Accepted` response with `{"enqueue": true}`, runs the conversion in the background, and streams the resulting file via a `POST` request to this callback URL (with the converted file under the `file` field).
 
 ---
 
 ## 🚀 Examples
 
-### 1. Convert via Direct File Upload
+### 1. Convert via Direct File Upload (Synchronous)
 ```bash
 curl -X POST http://localhost:8080/convert \
   -F "file=@input.oga" \
@@ -87,7 +88,7 @@ curl -X POST http://localhost:8080/convert \
   --output output.mp3
 ```
 
-### 2. Convert via Remote URL with Custom Headers
+### 2. Convert via Remote URL with Custom Headers (Synchronous)
 ```bash
 curl -X POST http://localhost:8080/convert \
   -F "url=https://example.com/audio.oga" \
@@ -95,6 +96,22 @@ curl -X POST http://localhost:8080/convert \
   -F 'headers={"Authorization": "Bearer YOUR_SECRET_TOKEN"}' \
   --output output.wav
 ```
+
+### 3. Asynchronous Conversion with Webhook Callback
+If you want to convert in the background and receive the file via webhook:
+```bash
+curl -X POST http://localhost:8080/convert \
+  -F "url=https://example.com/audio.oga" \
+  -F "output_format=mp3" \
+  -F "callback_url=https://your-webhook-receiver.com/callback"
+```
+Response (immediate):
+```json
+{
+  "enqueue": true
+}
+```
+Once conversion finishes, the server will issue a `POST` request to `https://your-webhook-receiver.com/callback` using `multipart/form-data` containing the converted file in the `file` field.
 
 ---
 
