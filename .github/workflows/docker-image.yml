@@ -36,3 +36,12 @@ jobs:
           tags: ${{ vars.DOCKER_USERNAME || secrets.DOCKER_USERNAME }}/${{ github.event.repository.name }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 5. Actualiza la descripción/README en Docker Hub automáticamente
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ vars.DOCKER_USERNAME || secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKER_USERNAME || secrets.DOCKER_USERNAME }}/${{ github.event.repository.name }}
+          readme-filepath: ./README.md
