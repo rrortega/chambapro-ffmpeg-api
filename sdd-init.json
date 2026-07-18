@@ -1,0 +1,18 @@
+{
+  "project_name": "chambapro-ffmpeg-api",
+  "stack": "Rust",
+  "dependencies_required": [
+    "axum",
+    "tokio",
+    "reqwest",
+    "ffmpeg-next"
+  ],
+  "features": [
+    "OGA to MP3 conversion via FFmpeg",
+    "File uploads",
+    "Downloading remote URLs with headers",
+    "Health check endpoint",
+    "Optimized Dockerfile"
+  ],
+  "status": "Initialized Cargo.toml and src/main.rs manually. Note: Rust/Cargo is not currently installed or not in PATH."
+}
