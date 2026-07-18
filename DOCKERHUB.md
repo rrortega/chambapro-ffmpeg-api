@@ -1,0 +1,91 @@
+# Chambapro FFmpeg API 🚀
+
+High-performance, ultra-lightweight Rust-based API for audio and video conversion using FFmpeg. Designed for high concurrency, reliability, and scale.
+
+> 🔗 **For interactive flowcharts, full benchmarks, and separate bilingual files, visit the [GitHub Repository](https://github.com/rrortega/chambapro-ffmpeg-api).**
+
+---
+
+## 🇺🇸 Quick Start (English)
+
+### 1. Run with Docker
+```bash
+docker run -d -p 80:80 \
+  -e REDIS_URL=redis://your-redis-host:6379 \
+  rrortega/chambapro-ffmpeg-api:latest
+```
+
+### 2. API Endpoints
+- `GET /` - Redirects to Swagger UI documentation at `/docs`.
+- `GET /docs` - Serves the interactive Swagger UI.
+- `GET /health` - Returns `OK`.
+- `POST /convert` - **Synchronous** conversion. Returns file directly.
+- `POST /convert-async` - **Asynchronous** conversion. Requires a `callback_url`. Enqueues jobs in Redis (if configured) or executes in background (no Redis).
+- `GET /download/:file_name` - Downloads converted files.
+
+### 3. Usage Examples
+**Synchronous Conversion:**
+```bash
+curl -X POST http://localhost/convert \
+  -F "file=@input.oga" \
+  -F "output_format=mp3" \
+  --output output.mp3
+```
+
+**Asynchronous Conversion via Webhook:**
+```bash
+curl -X POST http://localhost/convert-async \
+  -F "url=https://example.com/audio.oga" \
+  -F "output_format=mp3" \
+  -F "callback_url=https://your-webhook.com/callback"
+```
+
+---
+
+## 🇪🇸 Inicio Rápido (Español)
+
+### 1. Correr con Docker
+```bash
+docker run -d -p 80:80 \
+  -e REDIS_URL=redis://tu-servidor-redis:6379 \
+  rrortega/chambapro-ffmpeg-api:latest
+```
+
+### 2. Endpoints de la API
+- `GET /` - Redirige a la interfaz de Swagger UI en `/docs`.
+- `GET /docs` - Sirve la documentación interactiva de Swagger UI.
+- `GET /health` - Retorna `OK`.
+- `POST /convert` - Conversión **síncrona**. Retorna el archivo en la respuesta.
+- `POST /convert-async` - Conversión **asíncrona**. Requiere un `callback_url`. Encola tareas en Redis (si está configurado) o procesa en segundo plano (sin Redis).
+- `GET /download/:file_name` - Descarga de archivos convertidos.
+
+### 3. Ejemplos de Uso
+**Conversión Síncrona:**
+```bash
+curl -X POST http://localhost/convert \
+  -F "file=@input.oga" \
+  -F "output_format=mp3" \
+  --output output.mp3
+```
+
+**Conversión Asíncrona vía Webhook:**
+```bash
+curl -X POST http://localhost/convert-async \
+  -F "url=https://ejemplo.com/audio.oga" \
+  -F "output_format=mp3" \
+  -F "callback_url=https://tu-webhook.com/callback"
+```
+
+---
+
+## ⚙️ Configuration / Configuración
+
+| Variable | Description / Descripción | Default / Por Defecto |
+| :--- | :--- | :--- |
+| `PORT` | Listening port / Puerto de escucha | `80` |
+| `API_KEY` | (Optional) Key for X-API-KEY header / API Key de acceso | - |
+| `REDIS_URL` | (Optional) Redis connection URL / Conexión a Redis | - |
+| `MAX_RETRIES` | Max retries for failed jobs / Reintentos de conversión | `3` |
+| `CLEANUP_HOURS` | Temp files lifetime / Horas antes de limpiar archivos | `24` |
+| `STORAGE_DIR` | Mount directory / Directorio de almacenamiento | `./storage` |
+| `PUBLIC_URL` | App public address / Dirección pública de descargas | `http://localhost` |

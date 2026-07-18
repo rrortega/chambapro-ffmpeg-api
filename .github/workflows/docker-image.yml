@@ -44,4 +44,4 @@ jobs:
           username: ${{ vars.DOCKER_USERNAME || secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ vars.DOCKER_USERNAME || secrets.DOCKER_USERNAME }}/${{ github.event.repository.name }}
-          readme-filepath: ./README.md
+          readme-filepath: ./DOCKERHUB.md
