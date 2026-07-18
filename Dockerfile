@@ -1,6 +1,6 @@
 # Stage 1: Chef
 FROM rust:slim-bullseye AS chef
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev tar gzip ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef
 WORKDIR /app
 
