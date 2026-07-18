@@ -2,33 +2,47 @@
 
 [🇺🇸 English](README.md) | 🇪🇸 Español
 
-Una API en Rust de alto rendimiento y ultra-ligera para la conversión de audio y video utilizando FFmpeg. Diseñada para alta concurrencia, confiabilidad y velocidad.
+Una API en Rust de alto rendimiento y ultra-ligera para la conversión de audio y video utilizando FFmpeg. Diseñada para alta concurrencia, confiabilidad y escala.
 
 ---
 
 ## 📊 Diagrama de Flujo y Arquitectura
 
-Este diagrama muestra cómo el servidor Axum procesa las peticiones de forma asíncrona sin bloquear el bucle de eventos principal:
+Este diagrama muestra cómo se procesan las peticiones asíncronas, encolándose en Redis y distribuyéndose a los trabajadores en segundo plano:
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Client as Cliente
-    participant API as Servidor Web Rust (Axum)
-    participant Temp as Almacenamiento Temporal
-    participant FFmpeg as Subproceso FFmpeg
-    
-    Client->>API: POST /convert (Multipart: Archivo/URL, Formato Salida, Headers)
-    alt Subida Directa de Archivo
-        API->>Temp: Transmite chunks a NamedTempFile
-    else Descarga desde URL Remota
-        API->>API: Procesa Headers Personalizados (JSON)
-        API->>Temp: Descarga y transmite a NamedTempFile
+    participant API as Servidor Web Axum
+    participant Queue as Cola de Redis (LPUSH)
+    participant Worker as Trabajadores en Segundo Plano
+    participant Storage as Almacenamiento de Archivos
+    participant Webhook as Destino del Webhook
+
+    Client->>API: POST /convert-async (Archivo/URL, callback_url)
+    alt REDIS_URL está configurada (Modo 2)
+        API->>Queue: Encola Tarea de Conversión (UUID)
+        API-->>Client: 202 Accepted { uuid, enqueue: true }
+        loop Bucle del Trabajador
+            Worker->>Queue: Extrae Tarea
+            Worker->>Storage: Ejecuta conversión (FFmpeg) y guarda en storage/<uuid>.<ext>
+            Worker->>Queue: Programa Tarea de Limpieza (diferida 24h)
+            Worker->>Queue: Encola Tarea de Webhook
+        end
+        loop Envío del Webhook
+            Worker->>Webhook: POST estado/download_url (o payload binario)
+        end
+        loop Planificador Diferido
+            Worker->>Storage: Elimina <uuid>.<ext> (24h después)
+        end
+    else REDIS_URL NO está configurada (Modo 1)
+        API->>API: Lanza un hilo en segundo plano
+        API-->>Client: 202 Accepted { uuid, enqueue: true }
+        API->>Storage: Ejecuta conversión (FFmpeg)
+        API->>Webhook: Envía archivo binario al Webhook
+        API->>Storage: Limpieza inmediata del archivo convertido
     end
-    API->>FFmpeg: Lanza Subproceso Asíncrono (ffmpeg -i in -f formato out)
-    FFmpeg-->>API: Transmite la conversión finalizada
-    API->>Client: Devuelve respuesta en streaming (Body::from_stream)
-    Note over API,Temp: Los descriptores de archivos son liberados automáticamente por el OS
 ```
 
 ---
@@ -36,47 +50,38 @@ sequenceDiagram
 ## ✨ Características y Arquitectura
 
 Desarrollado sobre el ecosistema moderno de Rust para garantizar máximo rendimiento y seguridad:
-- **Axum y Tokio:** Basado en un bucle de eventos asíncrono no bloqueante, lo que permite manejar cientos de conexiones simultáneas con un consumo mínimo de recursos.
-- **Lanzamiento de Subprocesos Asíncronos:** FFmpeg se invoca de forma asíncrona mediante `tokio::process::Command`, asegurando que el hilo principal del servidor nunca se bloquee durante la conversión.
-- **Streaming con Consumo de Memoria Plano:** Las respuestas se envían en streaming al cliente en bloques usando `ReaderStream` y `Body::from_stream` de Axum, manteniendo el consumo de RAM constante incluso con archivos multimedia grandes.
-- **Limpieza Automática de Temporales:** Los archivos temporales se eliminan automáticamente bajo cualquier condición (conversión exitosa, desconexión del cliente o fallo en el proceso).
+- **Cola Opcional en Redis:** Si se configura `REDIS_URL`, la API opera como un sistema de procesamiento de tareas distribuido con mecanismos de reintento, límites de trabajadores, programación diferida de tareas y almacenamiento local de archivos.
+- **División Asíncrona / Síncrona:** 
+  - `/convert` maneja peticiones síncronas (devuelve el archivo directamente). Bloqueado si se envía un `callback_url`.
+  - `/convert-async` maneja peticiones asíncronas (requiere `callback_url` y responde de inmediato con el estado de la cola).
+- **Mecanismo de Reintento Automático:** Las conversiones que fallen dentro de la cola de Redis se reintentarán automáticamente hasta `MAX_RETRIES` (por defecto: 3) antes de reportar el fallo al webhook.
+- **Tarea de Limpieza Automática:** Los archivos procesados se guardan localmente y se eliminan automáticamente después de `CLEANUP_HOURS` (por defecto: 24h) mediante sets ordenados diferidos en Redis.
+- **Streaming Eficiente sin Consumo de RAM:** Los archivos se transmiten al cliente o webhook en bloques mediante `ReaderStream` para mantener el uso de memoria bajo y plano.
 
 ---
 
 ## 🔑 Autenticación y Configuración
 
-El servicio soporta autenticación opcional por API Key.
+El servicio soporta autenticación opcional por API Key y personalización mediante variables de entorno.
 
-Para habilitarla, crea un archivo `.env` en la raíz del proyecto (puedes usar [.env.example](.env.example) como plantilla):
+Crea un archivo `.env` en la raíz del proyecto (puedes usar [.env.example](.env.example) como plantilla):
 
 ```env
+PORT=8080
+RUST_LOG=info
+
+# (Opcional) Protección por API Key. Si se define, las peticiones deben incluir el header 'X-API-KEY'.
 API_KEY=tu_api_key_secreta_aqui
+
+# (Opcional) Cadena de conexión de Redis. Activa la cola asíncrona avanzada.
+REDIS_URL=redis://127.0.0.1:6379
+
+# (Opcional) Configuraciones del Worker
+MAX_RETRIES=3
+CLEANUP_HOURS=24
+STORAGE_DIR=./storage
+HOST_URL=http://localhost:8080
 ```
-
-Cuando `API_KEY` está configurada en el entorno:
-- Todas las peticiones a `/convert` deben incluir el header `X-API-KEY` coincidiendo con el valor configurado.
-- Peticiones sin header o con llaves inválidas devolverán una respuesta `401 Unauthorized`.
-- Si `API_KEY` no está configurada (o está vacía), la API funcionará en modo abierto (sin validación de seguridad).
-
----
-
-## ⚡ Pruebas de Rendimiento (Benchmarks)
-
-A continuación se muestran los resultados comparativos frente a una implementación típica en Node.js (Express + `fluent-ffmpeg`):
-
-### Uso de Recursos (Idle vs. Carga)
-
-| Métrica | Rust (Chambapro) | Node.js (Express + fluent) | Ventaja |
-| :--- | :--- | :--- | :--- |
-| **Memoria en Reposo (RSS)** | **~12 MB** | ~85 MB | **7 veces más ligero** |
-| **Memoria Activa (100 concurrentes)** | **~35 MB** (excl. FFmpeg) | ~250 MB | **7.1 veces más ligero** |
-| **Tiempo de Arranque del Servidor** | **< 3ms** | ~200ms | **66 veces más rápido** |
-
-### Capacidad de Procesamiento Concurrente (OGA a MP3)
-*Sistema: Apple M1 Pro de 8 núcleos, 100 peticiones concurrentes de archivos de 2MB `.oga`.*
-
-* **Rust (Chambapro):** Procesa las peticiones entrantes de inmediato, saturando la CPU únicamente con el trabajo de codificación real de FFmpeg. La sobrecarga de Axum se mantiene en `< 1%`.
-* **Node.js:** Experimenta demoras debido al hilo único y límites del pool de hilos (`UV_THREADPOOL_SIZE`), introduciendo colas de espera antes de poder lanzar los procesos de FFmpeg.
 
 ---
 
@@ -86,20 +91,28 @@ A continuación se muestran los resultados comparativos frente a una implementac
 Devuelve `OK`. Útil para pruebas de disponibilidad en balanceadores de carga y orquestadores de contenedores.
 
 ### `POST /convert`
-Convierte archivos multimedia a cualquier formato de destino soportado por tu instalación de FFmpeg.
+Realiza una conversión **síncrona**. Devuelve el archivo convertido directamente en el cuerpo de la respuesta HTTP.
+*Nota: Devuelve `400 Bad Request` si se proporciona un `callback_url`.*
+
+### `POST /convert-async`
+Realiza una conversión **asíncrona** (requiere `callback_url`). Devuelve inmediatamente `202 Accepted` con `{ "uuid": "...", "enqueue": true }`.
 
 **Parámetros (Multipart Form Data):**
-- `file` (opcional): El archivo multimedia a convertir (si se sube directamente).
-- `url` (opcional): URL remota del archivo a descargar y convertir.
-- `output_format` (opcional, por defecto: `mp3`): Extensión del formato de destino (ej. `mp3`, `mp4`, `wav`, `ogg`, `webm`).
-- `headers` (opcional): Cadena JSON con HTTP headers para descargar el archivo desde la `url` remota (ej. `{"Authorization": "Bearer token"}`).
-- `callback_url` (opcional): URL para procesamiento asíncrono. Si se especifica, la API responde inmediatamente `202 Accepted` con `{"enqueue": true}`. La conversión se procesa en segundo plano y el resultado se envía mediante un `POST` multiparte (con el archivo en el campo `file`) a la URL de callback provista.
+- `file` (opcional): El archivo multimedia a convertir.
+- `url` (opcional): URL remota del archivo multimedia a descargar.
+- `output_format` (opcional, por defecto: `mp3`): Extensión del formato de destino (ej. `mp3`, `mp4`, `wav`).
+- `headers` (opcional): Headers JSON personalizados para descargar desde la `url` remota.
+- `callback_url` (requerido): URL de webhook a la cual notificar al finalizar el proceso.
+- `include_file` (opcional, por defecto: `false`): Si es `true`, el webhook recibirá el archivo binario completo. Si es `false`, el webhook recibirá un JSON con el enlace de descarga.
+
+### `GET /download/:file_name`
+Descarga un archivo convertido del almacenamiento (ej. `/download/<uuid>.mp3`). Devuelve un error limpio si el archivo ya fue eliminado o no existe.
 
 ---
 
 ## 🚀 Ejemplos de Uso
 
-### 1. Conversión por Subida Directa de Archivo (Síncrona)
+### 1. Conversión Síncrona
 ```bash
 curl -X POST http://localhost:8080/convert \
   -F "file=@input.oga" \
@@ -107,30 +120,20 @@ curl -X POST http://localhost:8080/convert \
   --output output.mp3
 ```
 
-### 2. Conversión desde URL con Headers Personalizados (Síncrona)
+### 2. Cola Asíncrona (Webhook con Enlace de Descarga)
 ```bash
-curl -X POST http://localhost:8080/convert \
-  -F "url=https://ejemplo.com/audio.oga" \
-  -F "output_format=wav" \
-  -F 'headers={"Authorization": "Bearer MI_TOKEN_SECRETO"}' \
-  --output output.wav
-```
-
-### 3. Conversión Asíncrona con Callback por Webhook
-Si prefieres procesar en segundo plano y recibir el archivo convertido mediante un webhook:
-```bash
-curl -X POST http://localhost:8080/convert \
+curl -X POST http://localhost:8080/convert-async \
   -F "url=https://ejemplo.com/audio.oga" \
   -F "output_format=mp3" \
-  -F "callback_url=https://tu-receptor-webhook.com/callback"
+  -F "callback_url=https://tu-webhook.com/callback"
 ```
-Respuesta inmediata:
+Respuesta:
 ```json
 {
+  "uuid": "7a94dfbd-5b0c-4464-9b2f-3b2d6a5c2f9d",
   "enqueue": true
 }
 ```
-Una vez terminada la conversión, el servidor enviará una petición `POST` a `https://tu-receptor-webhook.com/callback` usando `multipart/form-data` con el archivo convertido en el campo `file`.
 
 ---
 
@@ -138,12 +141,4 @@ Una vez terminada la conversión, el servidor enviará una petición `POST` a `h
 
 Este proyecto cuenta con un `Dockerfile` multi-etapa optimizado con `cargo-chef` para maximizar el almacenamiento en caché de dependencias y reducir tiempos de despliegue.
 
-```bash
-# Compilar la imagen de Docker
-docker build -t rrortega/chambapro-ffmpeg-api:latest .
-
-# Ejecutar el contenedor localmente (mapeado al puerto 8080)
-docker run -d -p 8080:8080 rrortega/chambapro-ffmpeg-api:latest
-```
-
-Al desplegar en **Easypanel**, solo debes apuntar a tu repositorio de GitHub. El sistema detectará el [Dockerfile](Dockerfile) automáticamente y expondrá el puerto `8080`.
+Al desplegar en **Easypanel**, solo debes apuntar a tu repositorio de GitHub. El sistema detectará el [Dockerfile](Dockerfile) automáticamente y expondrá el puerto `8080`. No olvides enlazar un servicio de Redis e inyectar `REDIS_URL` en las variables de entorno.

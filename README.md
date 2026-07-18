@@ -2,33 +2,47 @@
 
 🇺🇸 English | [🇪🇸 Español](README.es.md)
 
-A high-performance, ultra-lightweight Rust-based API for audio and video conversion using FFmpeg. Designed for high concurrency, reliability, and speed.
+A high-performance, ultra-lightweight Rust-based API for audio and video conversion using FFmpeg. Designed for high concurrency, reliability, and scale.
 
 ---
 
 ## 📊 Flow & Architecture Diagram
 
-This diagram shows how requests are handled asynchronously by the Axum server without blocking the event loop:
+This diagram shows how asynchronous requests are handled, queued in Redis, and distributed to background workers:
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Client
-    participant API as Rust Web Server (Axum)
-    participant Temp as Temporary Storage
-    participant FFmpeg as FFmpeg Subprocess
-    
-    Client->>API: POST /convert (Multipart: File/URL, Output Format, Headers)
-    alt Upload Direct File
-        API->>Temp: Stream chunks to NamedTempFile
-    else Fetch Remote URL
-        API->>API: Parse Custom Headers (JSON)
-        API->>Temp: Download & Stream to NamedTempFile
+    participant API as Axum Web Server
+    participant Queue as Redis Queue (LPUSH)
+    participant Worker as Background Workers
+    participant Storage as File Storage
+    participant Webhook as Webhook Target
+
+    Client->>API: POST /convert-async (File/URL, callback_url)
+    alt REDIS_URL is configured (Mode 2)
+        API->>Queue: Push Conversion Job (UUID)
+        API-->>Client: 202 Accepted { uuid, enqueue: true }
+        loop Worker Loop
+            Worker->>Queue: Pop Job
+            Worker->>Storage: Run conversion (FFmpeg) & save to storage/<uuid>.<ext>
+            Worker->>Queue: Schedule Cleanup Job (24h delayed)
+            Worker->>Queue: Push Webhook Job
+        end
+        loop Webhook Delivery
+            Worker->>Webhook: POST status/download_url (or binary payload)
+        end
+        loop Delayed Scheduler
+            Worker->>Storage: Delete <uuid>.<ext> (24h later)
+        end
+    else REDIS_URL is NOT configured (Mode 1)
+        API->>API: Spawn background thread
+        API-->>Client: 202 Accepted { uuid, enqueue: true }
+        API->>Storage: Run conversion (FFmpeg)
+        API->>Webhook: Stream binary file to Webhook
+        API->>Storage: Immediate cleanup of converted file
     end
-    API->>FFmpeg: Spawn Async Subprocess (ffmpeg -i in -f format out)
-    FFmpeg-->>API: Stream completed conversion
-    API->>Client: Send chunked stream response (Body::from_stream)
-    Note over API,Temp: File descriptors automatically cleaned up by OS/Drop traits
 ```
 
 ---
@@ -36,47 +50,38 @@ sequenceDiagram
 ## ✨ Features & Architecture
 
 Built with the modern Rust ecosystem to ensure maximum performance and safety:
-- **Axum & Tokio:** Built on top of a non-blocking asynchronous event loop, allowing hundreds of concurrent connections with minimal resource usage.
-- **Async Subprocess Spawning:** FFmpeg is invoked asynchronously using `tokio::process::Command`, ensuring that the main server thread never blocks during conversion.
-- **Zero-Memory Streaming:** Response payloads are streamed back to the client as chunks using `ReaderStream` and Axum's `Body::from_stream` to keep memory consumption flat, even for large media files.
-- **Automated Temp Cleanup:** Temporary files are safely cleaned up automatically under all conditions (successful conversion, client disconnection, or conversion failure).
-
----
-
-## ⚡ Performance Benchmarks
-
-Below are representative benchmark results comparing this Rust implementation against a typical Node.js (Express + `fluent-ffmpeg`) wrapper:
-
-### Resource Utilization (Idle vs. Load)
-
-| Metric | Rust (Chambapro) | Node.js (Express + fluent) | Advantage |
-| :--- | :--- | :--- | :--- |
-| **Idle Memory (RSS)** | **~12 MB** | ~85 MB | **7x lighter** |
-| **Active Memory (100 concurrent)** | **~35 MB** (excl. FFmpeg) | ~250 MB | **7.1x lighter** |
-| **Server Startup Time** | **< 3ms** | ~200ms | **66x faster** |
-
-### Concurrent Conversion Throughput (OGA to MP3)
-*System: 8-Core Apple M1 Pro, 100 concurrent requests of 2MB `.oga` files.*
-
-* **Rust (Chambapro):** Handles incoming requests instantly, saturating the CPU only with actual FFmpeg encoding work. Axum overhead remains `< 1%`.
-* **Node.js:** Struggles with event-loop delays and thread pool limits (`UV_THREADPOOL_SIZE`), introducing queue latencies before spawning FFmpeg processes.
+- **Optional Redis Queue:** If `REDIS_URL` is set, the API operates as a distributed job processing system with retry mechanisms, worker limits, delayed task scheduling, and disk caching.
+- **Asynchronous / Synchronous Split:** 
+  - `/convert` handles synchronous requests (returns file directly). Blocked if `callback_url` is passed.
+  - `/convert-async` handles asynchronous requests (requires `callback_url` and returns immediate queue status).
+- **Auto-retry Mechanism:** Conversions failing inside the Redis queue automatically retry up to `MAX_RETRIES` (default: 3) before reporting failure to the webhook.
+- **Auto-cleanup Job:** Processed files are cached in a local storage directory and automatically removed after `CLEANUP_HOURS` (default: 24h) via Redis delayed sorted sets.
+- **MIME & Zero-Copy Streaming:** Files are streamed chunk-by-chunk to the client or webhook via `ReaderStream` to keep RAM usage flat.
 
 ---
 
 ## 🔑 Authentication & Configuration
 
-The service supports optional API Key authentication.
+The service supports optional API Key authentication and environment customization.
 
-To enable it, create a `.env` file in the project root (using [.env.example](file:///Users/mayo11/Develop/CHAMBAPRO/chambapro-ffmpeg-api/.env.example) as a template):
+Create a `.env` file in the project root (using [.env.example](.env.example) as a template):
 
 ```env
-API_KEY=your_secret_api_key_here
-```
+PORT=8080
+RUST_LOG=info
 
-When `API_KEY` is configured in the environment:
-- All requests to `/convert` must include the `X-API-KEY` header matching the environment value.
-- Requests with missing or invalid keys will return a `401 Unauthorized` response.
-- If `API_KEY` is not defined (or empty), the API runs in open mode (no authentication check is performed).
+# (Optional) API Key protection. If set, requests must include the 'X-API-KEY' header.
+API_KEY=your_secret_api_key_here
+
+# (Optional) Redis Connection string. Activates the advanced asynchronous queue.
+REDIS_URL=redis://127.0.0.1:6379
+
+# (Optional) Worker settings
+MAX_RETRIES=3
+CLEANUP_HOURS=24
+STORAGE_DIR=./storage
+HOST_URL=http://localhost:8080
+```
 
 ---
 
@@ -86,20 +91,28 @@ When `API_KEY` is configured in the environment:
 Returns `OK`. Used for load balancer health probes and container orchestrator checks.
 
 ### `POST /convert`
-Converts media files to any target format supported by FFmpeg.
+Performs **synchronous** conversion. Returns the converted file directly in the HTTP response body.
+*Note: Returns `400 Bad Request` if a `callback_url` is supplied.*
+
+### `POST /convert-async`
+Performs **asynchronous** conversion (requires `callback_url`). Returns `202 Accepted` with `{ "uuid": "...", "enqueue": true }` immediately.
 
 **Parameters (Multipart Form Data):**
-- `file` (optional): The media file to convert (if uploading directly).
-- `url` (optional): A remote URL of the media file to download and convert.
-- `output_format` (optional, default: `mp3`): The desired output format extension (e.g., `mp3`, `mp4`, `wav`, `ogg`, `webm`).
-- `headers` (optional): A JSON string containing custom HTTP headers to pass when fetching the remote `url` (e.g. `{"Authorization": "Bearer token"}`).
-- `callback_url` (optional): A URL for asynchronous processing. If provided, the API returns a fast `202 Accepted` response with `{"enqueue": true}`, runs the conversion in the background, and streams the resulting file via a `POST` request to this callback URL (with the converted file under the `file` field).
+- `file` (optional): The media file to convert.
+- `url` (optional): A remote URL of the media file to download.
+- `output_format` (optional, default: `mp3`): Target format extension (e.g. `mp3`, `mp4`, `wav`).
+- `headers` (optional): Custom JSON headers to fetch the remote `url`.
+- `callback_url` (required): Webhook endpoint to notify upon completion.
+- `include_file` (optional, default: `false`): If `true`, the webhook sends the full binary file. If `false`, the webhook receives a success JSON containing the download link.
+
+### `GET /download/:file_name`
+Downloads a converted file from storage (e.g. `/download/<uuid>.mp3`). Returns a clean error if the file has been cleaned up.
 
 ---
 
 ## 🚀 Examples
 
-### 1. Convert via Direct File Upload (Synchronous)
+### 1. Synchronous File Upload
 ```bash
 curl -X POST http://localhost:8080/convert \
   -F "file=@input.oga" \
@@ -107,43 +120,25 @@ curl -X POST http://localhost:8080/convert \
   --output output.mp3
 ```
 
-### 2. Convert via Remote URL with Custom Headers (Synchronous)
+### 2. Asynchronous Queue (Download Link Webhook)
 ```bash
-curl -X POST http://localhost:8080/convert \
-  -F "url=https://example.com/audio.oga" \
-  -F "output_format=wav" \
-  -F 'headers={"Authorization": "Bearer YOUR_SECRET_TOKEN"}' \
-  --output output.wav
-```
-
-### 3. Asynchronous Conversion with Webhook Callback
-If you want to convert in the background and receive the file via webhook:
-```bash
-curl -X POST http://localhost:8080/convert \
+curl -X POST http://localhost:8080/convert-async \
   -F "url=https://example.com/audio.oga" \
   -F "output_format=mp3" \
-  -F "callback_url=https://your-webhook-receiver.com/callback"
+  -F "callback_url=https://your-webhook.com/callback"
 ```
-Response (immediate):
+Response:
 ```json
 {
+  "uuid": "7a94dfbd-5b0c-4464-9b2f-3b2d6a5c2f9d",
   "enqueue": true
 }
 ```
-Once conversion finishes, the server will issue a `POST` request to `https://your-webhook-receiver.com/callback` using `multipart/form-data` containing the converted file in the `file` field.
 
 ---
 
 ## 🐳 Docker Deployment (Easypanel Friendly)
 
-This project uses an optimized multi-stage `Dockerfile` with `cargo-chef` to maximize layer caching and minimize deploy times.
+This project uses an optimized multi-stage `Dockerfile` with `cargo-chef` to maximize caching and minimize deploy times.
 
-```bash
-# Build the Docker image
-docker build -t rrortega/chambapro-ffmpeg-api:latest .
-
-# Run the container locally (mapped to port 8080)
-docker run -d -p 8080:8080 rrortega/chambapro-ffmpeg-api:latest
-```
-
-When deploying on **Easypanel**, simply point it to your Git repository. It will automatically build the image using the [Dockerfile](file:///Users/mayo11/Develop/CHAMBAPRO/chambapro-ffmpeg-api/Dockerfile) and expose port `8080`.
+On **Easypanel**, simply point it to your Git repository. It will automatically build the image using the [Dockerfile](Dockerfile) and expose port `8080`. Don't forget to link a Redis service and inject `REDIS_URL` in the environment variables.
