@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::Multipart,
-    http::{header, StatusCode},
+    http::{header, StatusCode, HeaderMap},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json,
@@ -18,16 +18,27 @@ use tracing_subscriber::EnvFilter;
 #[derive(Clone)]
 struct AppState {
     http_client: Client,
+    api_key: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
 
+    let api_key = std::env::var("API_KEY").ok().filter(|s| !s.trim().is_empty());
+    if api_key.is_some() {
+        info!("API Key authentication is enabled");
+    } else {
+        info!("API Key authentication is disabled (no API_KEY env var provided)");
+    }
+
     let state = AppState {
         http_client: Client::new(),
+        api_key,
     };
 
     let app = Router::new()
@@ -74,8 +85,22 @@ where
 
 async fn convert_media(
     axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Response, AppError> {
+    // API Key Authentication Guard
+    if let Some(expected_key) = &state.api_key {
+        let provided_key = headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok());
+
+        if provided_key != Some(expected_key.as_str()) {
+            return Ok((
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized: Missing or invalid X-API-KEY header",
+            ).into_response());
+        }
+    }
     let mut input_file_opt: Option<NamedTempFile> = None;
     let mut url_opt: Option<String> = None;
     let mut headers_opt: Option<String> = None;

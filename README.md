@@ -61,6 +61,23 @@ Below are representative benchmark results comparing this Rust implementation ag
 
 ---
 
+## 🔑 Authentication & Configuration
+
+The service supports optional API Key authentication.
+
+To enable it, create a `.env` file in the project root (using [.env.example](file:///Users/mayo11/Develop/CHAMBAPRO/chambapro-ffmpeg-api/.env.example) as a template):
+
+```env
+API_KEY=your_secret_api_key_here
+```
+
+When `API_KEY` is configured in the environment:
+- All requests to `/convert` must include the `X-API-KEY` header matching the environment value.
+- Requests with missing or invalid keys will return a `401 Unauthorized` response.
+- If `API_KEY` is not defined (or empty), the API runs in open mode (no authentication check is performed).
+
+---
+
 ## 🛠️ API Endpoints
 
 ### `GET /health`
