@@ -145,3 +145,21 @@ Respuesta:
 Este proyecto cuenta con un `Dockerfile` multi-etapa optimizado con `cargo-chef` para maximizar el almacenamiento en caché de dependencias y reducir tiempos de despliegue.
 
 Al desplegar en **Easypanel**, solo debes apuntar a tu repositorio de GitHub. El sistema detectará el [Dockerfile](Dockerfile) automáticamente y expondrá el puerto `8080`. No olvides enlazar un servicio de Redis e inyectar `REDIS_URL` en las variables de entorno.
+
+---
+
+## 📈 Escalabilidad y Mapeo de Volúmenes
+
+Al desplegar esta API en entornos distribuidos o multi-instancia (ej. Kubernetes, Docker Swarm, múltiples contenedores Docker detrás de Traefik/Nginx, o plataformas en la nube):
+
+### 1. Autoescalado Horizontal (Productor-Consumidor)
+- El endpoint asíncrono `/convert-async` actúa como **Productor**, insertando tareas de manera instantánea en Redis.
+- Los trabajadores en segundo plano en cada contenedor actúan como **Consumidores**, resolviendo tareas de manera atómica mediante operaciones de Redis.
+- Puedes escalar los contenedores de la API web horizontalmente para manejar la concurrencia de peticiones y escalar los trabajadores de procesamiento de fondo de manera independiente.
+
+### 2. Requisito de Almacenamiento Compartido (CRÍTICO)
+- **Problema**: Cuando un contenedor procesa una conversión, escribe el archivo final en su `STORAGE_DIR` local. Si un cliente realiza una petición `GET /download/:file_name`, el balanceador de carga podría dirigirla a otro contenedor que no dispone del archivo físico, resultando en un error `404 Not Found`.
+- **Solución**: Debes configurar `STORAGE_DIR` para que apunte a un **volumen de almacenamiento compartido** montado por todas las instancias.
+  - **Docker Compose**: Utiliza un volumen nombrado compartido o un montaje de tipo bind.
+  - **Kubernetes**: Monta un `PersistentVolumeClaim` con modo de acceso `ReadWriteMany` (RWX) (ej. mediante NFS, AWS EFS o Ceph).
+  - **Easypanel / Nube**: Mapea un directorio persistente compartido o unidad de red a través de todas las instancias de tu aplicación.

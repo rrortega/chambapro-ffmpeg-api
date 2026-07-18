@@ -145,3 +145,21 @@ Response:
 This project uses an optimized multi-stage `Dockerfile` with `cargo-chef` to maximize caching and minimize deploy times.
 
 On **Easypanel**, simply point it to your Git repository. It will automatically build the image using the [Dockerfile](Dockerfile) and expose port `8080`. Don't forget to link a Redis service and inject `REDIS_URL` in the environment variables.
+
+---
+
+## 📈 Scalability & Volume Mapping
+
+When deploying this API in a clustered or multi-instance environment (e.g., Kubernetes, Docker Swarm, multiple Docker containers behind Traefik/Nginx, or cloud platforms):
+
+### 1. Horizontal Autoscaling (Producer-Consumer)
+- The asynchronous `/convert-async` endpoint acts as a **Producer**, inserting tasks into Redis.
+- Background workers in each container act as **Consumers**, fetching tasks atomically using Redis operations.
+- You can scale the web API containers horizontally to handle high request concurrency, and scale the background processing workers independently.
+
+### 2. Shared Storage Requirement (CRITICAL)
+- **Problem**: When a worker container processes a conversion, it writes the output file to its local `STORAGE_DIR`. If a client makes a `GET /download/:file_name` request, the load balancer may route it to a different container that does not have the file, resulting in a `404 Not Found` error.
+- **Solution**: You **must** configure `STORAGE_DIR` to point to a **shared storage volume** mounted by all instances.
+  - **Docker Compose**: Use a shared named volume or host-bind mount.
+  - **Kubernetes**: Mount a `PersistentVolumeClaim` with `ReadWriteMany` (RWX) access mode (e.g., using NFS, AWS EFS, or Ceph).
+  - **Easypanel / Cloud providers**: Map a shared persistent directory or network drive across your app instances.
