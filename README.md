@@ -1,5 +1,7 @@
 # Chambapro FFmpeg API 🚀
 
+🇺🇸 English | [🇪🇸 Español](README.es.md)
+
 A high-performance, ultra-lightweight Rust-based API for audio and video conversion using FFmpeg. Designed for high concurrency, reliability, and speed.
 
 ---
