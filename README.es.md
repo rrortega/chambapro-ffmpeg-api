@@ -87,6 +87,9 @@ HOST_URL=http://localhost:8080
 
 ## 🛠️ Endpoints de la API
 
+### `GET /docs`
+Sirve la documentación interactiva de la API con Swagger UI (especificación OpenAPI 3.0).
+
 ### `GET /health`
 Devuelve `OK`. Útil para pruebas de disponibilidad en balanceadores de carga y orquestadores de contenedores.
 

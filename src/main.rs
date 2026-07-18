@@ -7,6 +7,7 @@ use axum::{
     Json,
     Router,
 };
+use utoipa::OpenApi;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, net::SocketAddr, path::Path};
@@ -128,11 +129,28 @@ async fn main() -> anyhow::Result<()> {
         cleanup_hours,
     };
 
+    #[derive(OpenApi)]
+    #[openapi(
+        paths(
+            health_check,
+            convert_media,
+            convert_media_async,
+            download_file_endpoint
+        ),
+        info(
+            title = "Chambapro FFmpeg API",
+            version = "1.0.0",
+            description = "High-performance API for asynchronous and synchronous audio/video conversion using FFmpeg."
+        )
+    )]
+    struct ApiDoc;
+
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/convert", post(convert_media))
         .route("/convert-async", post(convert_media_async))
         .route("/download/:file_name", get(download_file_endpoint))
+        .merge(utoipa_swagger_ui::SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
@@ -145,6 +163,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Server is healthy", body = String)
+    )
+)]
 async fn health_check() -> &'static str {
     "OK"
 }
@@ -172,6 +197,18 @@ where
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/convert",
+    responses(
+        (status = 200, description = "Successful media conversion", body = Vec<u8>),
+        (status = 400, description = "Invalid request or callback_url provided"),
+        (status = 401, description = "Unauthorized - Missing or invalid API Key")
+    ),
+    params(
+        ("x-api-key" = Option<String>, Header, description = "Optional API Key for authentication")
+    )
+)]
 async fn convert_media(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -308,6 +345,18 @@ async fn convert_media(
     Ok(response)
 }
 
+#[utoipa::path(
+    post,
+    path = "/convert-async",
+    responses(
+        (status = 202, description = "Conversion enqueued successfully", body = serde_json::Value),
+        (status = 400, description = "Invalid request or missing parameters"),
+        (status = 401, description = "Unauthorized - Missing or invalid API Key")
+    ),
+    params(
+        ("x-api-key" = Option<String>, Header, description = "Optional API Key for authentication")
+    )
+)]
 async fn convert_media_async(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -465,6 +514,17 @@ async fn convert_media_async(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/download/{file_name}",
+    responses(
+        (status = 200, description = "Download converted file", body = Vec<u8>),
+        (status = 404, description = "File not found or has been cleaned up")
+    ),
+    params(
+        ("file_name" = String, Path, description = "The name of the file to download (e.g. uuid.ext)")
+    )
+)]
 async fn download_file_endpoint(
     State(state): State<AppState>,
     AxumPath(file_name): AxumPath<String>,
