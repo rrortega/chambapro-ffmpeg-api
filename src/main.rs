@@ -22,8 +22,9 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use utoipa::OpenApi;
+use chrono::TimeZone;
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, Deserialize)]
 struct DashboardJob {
     uuid: String,
     job_type: String,
@@ -33,7 +34,7 @@ struct DashboardJob {
     timestamp: String,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, Deserialize)]
 struct RequestMetric {
     timestamp: String, // RFC3339 string
     duration_ms: u64,
@@ -134,15 +135,84 @@ impl std::io::Write for DashboardLogWriter {
 )]
 struct ApiDoc;
 
+// Load persisted dashboard data from disk
+async fn load_dashboard_from_disk(storage_dir: &str) -> DashboardState {
+    let mut jobs = Vec::new();
+    let mut metrics = Vec::new();
+
+    // Ensure directory structures exist
+    let jobs_dir = format!("{}/dashboard/jobs", storage_dir);
+    let metrics_dir = format!("{}/dashboard/metrics", storage_dir);
+    let _ = tokio::fs::create_dir_all(&jobs_dir).await;
+    let _ = tokio::fs::create_dir_all(&metrics_dir).await;
+
+    // Load Jobs
+    if let Ok(mut entries) = tokio::fs::read_dir(&jobs_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if entry.path().is_file() {
+                if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
+                    if let Ok(job) = serde_json::from_str::<DashboardJob>(&content) {
+                        jobs.push(job);
+                    }
+                }
+            }
+        }
+    }
+    jobs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+    // Load Metrics
+    if let Ok(mut entries) = tokio::fs::read_dir(&metrics_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if entry.path().is_file() {
+                if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
+                    if let Ok(metric) = serde_json::from_str::<RequestMetric>(&content) {
+                        metrics.push(metric);
+                    }
+                }
+            }
+        }
+    }
+    metrics.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+    info!("Loaded {} jobs and {} request metrics from disk cache", jobs.len(), metrics.len());
+
+    DashboardState {
+        jobs,
+        logs: Vec::new(),
+        metrics,
+    }
+}
+
+// Persist a job to disk
+async fn save_job_to_disk(storage_dir: &str, job: &DashboardJob) {
+    let jobs_dir = format!("{}/dashboard/jobs", storage_dir);
+    let path = format!("{}/{}.json", jobs_dir, job.uuid);
+    if let Ok(content) = serde_json::to_string(job) {
+        let _ = tokio::fs::write(path, content).await;
+    }
+}
+
+// Persist a request metric to disk
+async fn save_metric_to_disk(storage_dir: &str, metric: &RequestMetric) {
+    let metrics_dir = format!("{}/dashboard/metrics", storage_dir);
+    // Use UUID for unique filenames
+    let path = format!("{}/{}.json", metrics_dir, Uuid::new_v4());
+    if let Ok(content) = serde_json::to_string(metric) {
+        let _ = tokio::fs::write(path, content).await;
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    let dashboard_state = Arc::new(RwLock::new(DashboardState {
-        jobs: Vec::new(),
-        logs: Vec::new(),
-        metrics: Vec::new(),
-    }));
+    let storage_dir = std::env::var("STORAGE_DIR").unwrap_or_else(|_| "./storage".to_string());
+    tokio::fs::create_dir_all(&storage_dir).await?;
+    info!("Storage directory set to: {}", storage_dir);
+
+    // Load existing cache from storage folder before configuring logs/writers
+    let loaded_state = load_dashboard_from_disk(&storage_dir).await;
+    let dashboard_state = Arc::new(RwLock::new(loaded_state));
 
     let writer = DashboardLogWriter {
         state: dashboard_state.clone(),
@@ -159,10 +229,6 @@ async fn main() -> anyhow::Result<()> {
     } else {
         info!("API Key authentication is disabled (no API_KEY env var provided)");
     }
-
-    let storage_dir = std::env::var("STORAGE_DIR").unwrap_or_else(|_| "./storage".to_string());
-    tokio::fs::create_dir_all(&storage_dir).await?;
-    info!("Storage directory set to: {}", storage_dir);
 
     let host_url = std::env::var("PUBLIC_URL")
         .or_else(|_| std::env::var("HOST_URL"))
@@ -276,17 +342,27 @@ async fn track_metrics(
     if is_api_metric {
         let duration = start.elapsed().as_millis() as u64;
         let status = response.status().as_u16();
+        
+        let new_metric = RequestMetric {
+            timestamp: chrono::Local::now().to_rfc3339(),
+            duration_ms: duration,
+            endpoint: path,
+            status,
+        };
+
+        // Write to memory cache
         if let Ok(mut db_state) = state.dashboard.0.write() {
-            db_state.metrics.push(RequestMetric {
-                timestamp: chrono::Local::now().to_rfc3339(),
-                duration_ms: duration,
-                endpoint: path,
-                status,
-            });
-            if db_state.metrics.len() > 1000 {
+            db_state.metrics.push(new_metric.clone());
+            if db_state.metrics.len() > 2000 {
                 db_state.metrics.remove(0);
             }
         }
+
+        // Write to disk in non-blocking background thread
+        let storage_dir = state.storage_dir.clone();
+        tokio::spawn(async move {
+            save_metric_to_disk(&storage_dir, &new_metric).await;
+        });
     }
 
     response
@@ -302,23 +378,39 @@ fn update_job_status(
 ) {
     if let Ok(mut state) = dashboard.0.write() {
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let job_updated;
+
         if let Some(job) = state.jobs.iter_mut().find(|j| j.uuid == uuid) {
             job.status = status.to_string();
             job.retries = retries;
-            job.error = error;
-            job.timestamp = timestamp;
+            job.error = error.clone();
+            job.timestamp = timestamp.clone();
+            job_updated = Some(job.clone());
         } else {
-            state.jobs.push(DashboardJob {
+            let new_job = DashboardJob {
                 uuid,
                 job_type: job_type.to_string(),
                 status: status.to_string(),
                 retries,
-                error,
+                error: error.clone(),
                 timestamp,
-            });
-            if state.jobs.len() > 100 {
+            };
+            state.jobs.push(new_job.clone());
+            job_updated = Some(new_job);
+            if state.jobs.len() > 500 {
                 state.jobs.remove(0);
             }
+        }
+
+        // Write updated job to disk asynchronously
+        if let Some(job) = job_updated {
+            // Find storage directory from thread local or we can derive it from the job path.
+            // Since we don't have direct AppState here, we can derive the directory or use standard fallback "./storage".
+            // Since STORAGE_DIR defaults to "./storage", we write there or check environment
+            let storage_dir = std::env::var("STORAGE_DIR").unwrap_or_else(|_| "./storage".to_string());
+            tokio::spawn(async move {
+                save_job_to_disk(&storage_dir, &job).await;
+            });
         }
     }
 }
@@ -334,6 +426,60 @@ async fn health_check() -> &'static str {
     "OK"
 }
 
+// Clean up metrics and jobs files from disk older than 30 days
+async fn perform_dashboard_disk_cleanup(storage_dir: &str) -> anyhow::Result<()> {
+    let now = std::time::SystemTime::now();
+    let max_age = std::time::Duration::from_secs(30 * 24 * 3600); // 30 days
+    let mut cleaned_count = 0;
+
+    // 1. Clean jobs
+    let jobs_dir = format!("{}/dashboard/jobs", storage_dir);
+    if let Ok(mut entries) = tokio::fs::read_dir(&jobs_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(metadata) = entry.metadata().await {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(age) = now.duration_since(modified) {
+                            if age > max_age {
+                                if tokio::fs::remove_file(&path).await.is_ok() {
+                                    cleaned_count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Clean metrics
+    let metrics_dir = format!("{}/dashboard/metrics", storage_dir);
+    if let Ok(mut entries) = tokio::fs::read_dir(&metrics_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(metadata) = entry.metadata().await {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(age) = now.duration_since(modified) {
+                            if age > max_age {
+                                if tokio::fs::remove_file(&path).await.is_ok() {
+                                    cleaned_count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if cleaned_count > 0 {
+        info!("Dashboard retention cleanup: removed {} expired data cache files", cleaned_count);
+    }
+    Ok(())
+}
+
 async fn perform_directory_cleanup(
     storage_dir: &str,
     cleanup_hours: u64,
@@ -344,8 +490,10 @@ async fn perform_directory_cleanup(
     let max_age = std::time::Duration::from_secs(cleanup_hours * 3600);
     let mut cleaned_count = 0;
 
+    // Scan regular temp uploaded / converted files
     while let Some(entry) = dir.next_entry().await? {
         let path = entry.path();
+        // Ignore dashboard folder to prevent deleting cache files here
         if path.is_file() {
             if let Ok(metadata) = entry.metadata().await {
                 if let Ok(modified) = metadata.modified() {
@@ -375,6 +523,38 @@ async fn perform_directory_cleanup(
     if cleaned_count > 0 {
         info!("Directory cleanup finished. Removed {} expired files.", cleaned_count);
     }
+
+    // Perform retention cleanup for dashboard history (30 days)
+    let _ = perform_dashboard_disk_cleanup(storage_dir).await;
+
+    // Clean up memory cache vectors to prevent endless leaks in RAM
+    if let Ok(mut state) = dashboard.0.write() {
+        let max_age_metrics = chrono::Duration::days(30);
+        let now_time = chrono::Local::now();
+        
+        state.metrics.retain(|m| {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&m.timestamp) {
+                let age = now_time.signed_duration_since(dt);
+                age < max_age_metrics
+            } else {
+                true
+            }
+        });
+        
+        state.jobs.retain(|j| {
+            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&j.timestamp, "%Y-%m-%d %H:%M:%S") {
+                if let Some(dt_local) = chrono::Local.from_local_datetime(&dt).single() {
+                    let age = now_time.signed_duration_since(dt_local);
+                    age < max_age_metrics
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        });
+    }
+
     Ok(())
 }
 
@@ -1161,7 +1341,7 @@ async fn dashboard_page() -> Html<String> {
                     <option value="minute">Minute</option>
                     <option value="hour" selected>Hour</option>
                     <option value="day">Day</option>
-                </</select>
+                </select>
             </div>
             <div id="metric-chart" style="height: 280px;"></div>
         </div>
