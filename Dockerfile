@@ -24,8 +24,8 @@ RUN apt-get update && apt-get install -y ffmpeg ca-certificates && rm -rf /var/l
 WORKDIR /app
 COPY --from=builder /app/target/release/chambapro-ffmpeg-api /usr/local/bin/
 
-ENV PORT=8080
-EXPOSE 8080
+ENV PORT=80
+EXPOSE 80
 ENV RUST_LOG=info
 
 CMD ["chambapro-ffmpeg-api"]

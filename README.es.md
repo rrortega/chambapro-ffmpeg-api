@@ -67,7 +67,7 @@ El servicio soporta autenticación opcional por API Key y personalización media
 Crea un archivo `.env` en la raíz del proyecto (puedes usar [.env.example](.env.example) como plantilla):
 
 ```env
-PORT=8080
+PORT=80
 RUST_LOG=info
 
 # (Opcional) Protección por API Key. Si se define, las peticiones deben incluir el header 'X-API-KEY'.
@@ -80,12 +80,15 @@ REDIS_URL=redis://127.0.0.1:6379
 MAX_RETRIES=3
 CLEANUP_HOURS=24
 STORAGE_DIR=./storage
-HOST_URL=http://localhost:8080
+PUBLIC_URL=http://localhost
 ```
 
 ---
 
 ## 🛠️ Endpoints de la API
+
+### `GET /`
+Redirige automáticamente a `/docs` para el acceso inmediato a la documentación.
 
 ### `GET /docs`
 Sirve la documentación interactiva de la API con Swagger UI (especificación OpenAPI 3.0).
@@ -117,7 +120,7 @@ Descarga un archivo convertido del almacenamiento (ej. `/download/<uuid>.mp3`). 
 
 ### 1. Conversión Síncrona
 ```bash
-curl -X POST http://localhost:8080/convert \
+curl -X POST http://localhost/convert \
   -F "file=@input.oga" \
   -F "output_format=mp3" \
   --output output.mp3
@@ -125,7 +128,7 @@ curl -X POST http://localhost:8080/convert \
 
 ### 2. Cola Asíncrona (Webhook con Enlace de Descarga)
 ```bash
-curl -X POST http://localhost:8080/convert-async \
+curl -X POST http://localhost/convert-async \
   -F "url=https://ejemplo.com/audio.oga" \
   -F "output_format=mp3" \
   -F "callback_url=https://tu-webhook.com/callback"
@@ -144,7 +147,7 @@ Respuesta:
 
 Este proyecto cuenta con un `Dockerfile` multi-etapa optimizado con `cargo-chef` para maximizar el almacenamiento en caché de dependencias y reducir tiempos de despliegue.
 
-Al desplegar en **Easypanel**, solo debes apuntar a tu repositorio de GitHub. El sistema detectará el [Dockerfile](Dockerfile) automáticamente y expondrá el puerto `8080`. No olvides enlazar un servicio de Redis e inyectar `REDIS_URL` en las variables de entorno.
+Al desplegar en **Easypanel**, solo debes apuntar a tu repositorio de GitHub. El sistema detectará el [Dockerfile](Dockerfile) automáticamente y expondrá el puerto `80`. No olvides enlazar un servicio de Redis e inyectar `REDIS_URL` en las variables de entorno.
 
 ---
 

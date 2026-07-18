@@ -148,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
     struct ApiDoc;
 
     let app = Router::new()
+        .route("/", get(|| async { axum::response::Redirect::permanent("/docs") }))
         .route("/health", get(health_check))
         .route("/convert", post(convert_media))
         .route("/convert-async", post(convert_media_async))
@@ -155,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(utoipa_swagger_ui::SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state);
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let port = std::env::var("PORT").unwrap_or_else(|_| "80".to_string());
     let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
 
     info!("Listening on {}", addr);

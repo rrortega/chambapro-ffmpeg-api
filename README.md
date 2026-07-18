@@ -67,7 +67,7 @@ The service supports optional API Key authentication and environment customizati
 Create a `.env` file in the project root (using [.env.example](.env.example) as a template):
 
 ```env
-PORT=8080
+PORT=80
 RUST_LOG=info
 
 # (Optional) API Key protection. If set, requests must include the 'X-API-KEY' header.
@@ -80,12 +80,15 @@ REDIS_URL=redis://127.0.0.1:6379
 MAX_RETRIES=3
 CLEANUP_HOURS=24
 STORAGE_DIR=./storage
-HOST_URL=http://localhost:8080
+PUBLIC_URL=http://localhost
 ```
 
 ---
 
 ## 🛠️ API Endpoints
+
+### `GET /`
+Redirects automatically to `/docs` for immediate documentation access.
 
 ### `GET /docs`
 Serves the interactive Swagger UI API documentation (OpenAPI 3.0 specification).
@@ -117,7 +120,7 @@ Downloads a converted file from storage (e.g. `/download/<uuid>.mp3`). Returns a
 
 ### 1. Synchronous File Upload
 ```bash
-curl -X POST http://localhost:8080/convert \
+curl -X POST http://localhost/convert \
   -F "file=@input.oga" \
   -F "output_format=mp3" \
   --output output.mp3
@@ -125,7 +128,7 @@ curl -X POST http://localhost:8080/convert \
 
 ### 2. Asynchronous Queue (Download Link Webhook)
 ```bash
-curl -X POST http://localhost:8080/convert-async \
+curl -X POST http://localhost/convert-async \
   -F "url=https://example.com/audio.oga" \
   -F "output_format=mp3" \
   -F "callback_url=https://your-webhook.com/callback"
@@ -144,7 +147,7 @@ Response:
 
 This project uses an optimized multi-stage `Dockerfile` with `cargo-chef` to maximize caching and minimize deploy times.
 
-On **Easypanel**, simply point it to your Git repository. It will automatically build the image using the [Dockerfile](Dockerfile) and expose port `8080`. Don't forget to link a Redis service and inject `REDIS_URL` in the environment variables.
+On **Easypanel**, simply point it to your Git repository. It will automatically build the image using the [Dockerfile](Dockerfile) and expose port `80`. Don't forget to link a Redis service and inject `REDIS_URL` in the environment variables.
 
 ---
 
