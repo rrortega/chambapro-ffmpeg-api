@@ -114,6 +114,9 @@ Performs **asynchronous** conversion (requires `callback_url`). Returns `202 Acc
 ### `GET /download/:file_name`
 Downloads a converted file from storage (e.g. `/download/<uuid>.mp3`). Returns a clean error if the file has been cleaned up.
 
+### `GET /dashboard`
+Serves a beautiful, real-time web dashboard displaying current queue metrics (total, pending, success, failed), live job updates, and scrolling stdout process logs.
+
 ---
 
 ## 🚀 Examples

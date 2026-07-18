@@ -114,6 +114,9 @@ Realiza una conversión **asíncrona** (requiere `callback_url`). Devuelve inmed
 ### `GET /download/:file_name`
 Descarga un archivo convertido del almacenamiento (ej. `/download/<uuid>.mp3`). Devuelve un error limpio si el archivo ya fue eliminado o no existe.
 
+### `GET /dashboard`
+Sirve un panel web interactivo en tiempo real que muestra métricas generales de las colas (total, procesando, éxito, fallidos), el estado de los últimos trabajos en cola y el flujo en vivo de los logs de stdout del servicio.
+
 ---
 
 ## 🚀 Ejemplos de Uso

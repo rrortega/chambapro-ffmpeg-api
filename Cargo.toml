@@ -21,3 +21,4 @@ dotenvy = "0.15"
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 utoipa = { version = "4.2" }
 utoipa-swagger-ui = { version = "7.0", features = ["axum", "reqwest"] }
+chrono = { version = "0.4", features = ["serde"] }

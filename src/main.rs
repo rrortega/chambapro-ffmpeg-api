@@ -2,20 +2,43 @@ use axum::{
     body::Body,
     extract::{Multipart, Path as AxumPath, State},
     http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json,
     Router,
 };
-use utoipa::OpenApi;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, net::SocketAddr, path::Path};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::Path,
+    sync::{Arc, RwLock},
+};
 use tokio::{fs::File, io::AsyncWriteExt, process::Command};
 use tokio_util::io::ReaderStream;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
+use utoipa::OpenApi;
+
+#[derive(Serialize, Clone, Debug)]
+struct DashboardJob {
+    uuid: String,
+    job_type: String,
+    status: String, // "Enqueued", "Processing", "Success", "Failed"
+    retries: u32,
+    error: Option<String>,
+    timestamp: String,
+}
+
+struct DashboardState {
+    jobs: Vec<DashboardJob>,
+    logs: Vec<String>,
+}
+
+#[derive(Clone)]
+struct SharedDashboardState(Arc<RwLock<DashboardState>>);
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -27,6 +50,7 @@ struct AppState {
     host_url: String,
     max_retries: u32,
     cleanup_hours: u64,
+    dashboard: SharedDashboardState,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -60,11 +84,60 @@ struct Job {
     job_type: JobType,
 }
 
+// Custom log writer to capture all logs to the dashboard in real-time
+#[derive(Clone)]
+struct DashboardLogWriter {
+    state: Arc<RwLock<DashboardState>>,
+}
+
+impl std::io::Write for DashboardLogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let msg = String::from_utf8_lossy(buf).to_string();
+        if let Ok(mut state) = self.state.write() {
+            state.logs.push(msg.clone());
+            if state.logs.len() > 150 {
+                state.logs.remove(0);
+            }
+        }
+        std::io::stdout().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stdout().flush()
+    }
+}
+
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(
+        health_check,
+        convert_media,
+        convert_media_async,
+        download_file_endpoint
+    ),
+    info(
+        title = "Chambapro FFmpeg API",
+        version = "1.0.0",
+        description = "High-performance API for asynchronous and synchronous audio/video conversion using FFmpeg."
+    )
+)]
+struct ApiDoc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
+    let dashboard_state = Arc::new(RwLock::new(DashboardState {
+        jobs: Vec::new(),
+        logs: Vec::new(),
+    }));
+
+    let writer = DashboardLogWriter {
+        state: dashboard_state.clone(),
+    };
+
     tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
 
@@ -81,7 +154,8 @@ async fn main() -> anyhow::Result<()> {
 
     let host_url = std::env::var("PUBLIC_URL")
         .or_else(|_| std::env::var("HOST_URL"))
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+        .unwrap_or_else(|_| "http://localhost:80".to_string());
+
     let max_retries = std::env::var("MAX_RETRIES")
         .ok()
         .and_then(|val| val.parse().ok())
@@ -93,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
 
     let redis_url = std::env::var("REDIS_URL").ok().filter(|s| !s.trim().is_empty());
     let mut redis_manager = None;
+    let shared_dashboard = SharedDashboardState(dashboard_state);
 
     if let Some(url) = redis_url {
         info!("Connecting to Redis at: {}", url);
@@ -105,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
         let http_client = Client::new();
         let storage_dir_clone = storage_dir.clone();
         let host_url_clone = host_url.clone();
+        let dashboard_clone = shared_dashboard.clone();
         tokio::spawn(async move {
             if let Err(e) = run_queue_workers(
                 manager_clone,
@@ -113,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
                 host_url_clone,
                 max_retries,
                 cleanup_hours,
+                dashboard_clone,
             ).await {
                 error!("Queue worker loop error: {:?}", e);
             }
@@ -129,23 +206,10 @@ async fn main() -> anyhow::Result<()> {
         host_url,
         max_retries,
         cleanup_hours,
+        dashboard: shared_dashboard.clone(),
     };
 
-    #[derive(OpenApi)]
-    #[openapi(
-        paths(
-            health_check,
-            convert_media,
-            convert_media_async,
-            download_file_endpoint
-        ),
-        info(
-            title = "Chambapro FFmpeg API",
-            version = "1.0.0",
-            description = "High-performance API for asynchronous and synchronous audio/video conversion using FFmpeg."
-        )
-    )]
-    struct ApiDoc;
+
 
     let app = Router::new()
         .route("/", get(|| async { axum::response::Redirect::permanent("/docs") }))
@@ -153,6 +217,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/convert", post(convert_media))
         .route("/convert-async", post(convert_media_async))
         .route("/download/:file_name", get(download_file_endpoint))
+        .route("/dashboard", get(dashboard_page))
+        .route("/api/dashboard", get(dashboard_api))
         .merge(utoipa_swagger_ui::SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state);
 
@@ -164,6 +230,37 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+fn update_job_status(
+    dashboard: &SharedDashboardState,
+    uuid: String,
+    job_type: &str,
+    status: &str,
+    retries: u32,
+    error: Option<String>,
+) {
+    if let Ok(mut state) = dashboard.0.write() {
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        if let Some(job) = state.jobs.iter_mut().find(|j| j.uuid == uuid) {
+            job.status = status.to_string();
+            job.retries = retries;
+            job.error = error;
+            job.timestamp = timestamp;
+        } else {
+            state.jobs.push(DashboardJob {
+                uuid,
+                job_type: job_type.to_string(),
+                status: status.to_string(),
+                retries,
+                error,
+                timestamp,
+            });
+            if state.jobs.len() > 100 {
+                state.jobs.remove(0);
+            }
+        }
+    }
 }
 
 #[utoipa::path(
@@ -304,6 +401,8 @@ async fn convert_media(
     let uuid = Uuid::new_v4().to_string();
     let out_path = format!("{}/{}.{}", state.storage_dir, uuid, output_format);
 
+    update_job_status(&state.dashboard, uuid.clone(), "Convert (Sync)", "Processing", 0, None);
+
     // Call ffmpeg synchronously
     let ffmpeg_res = run_ffmpeg(Path::new(&input_path), Path::new(&out_path), &output_format).await;
 
@@ -311,7 +410,12 @@ async fn convert_media(
     let _ = tokio::fs::remove_file(&input_path).await;
 
     // Check ffmpeg result
-    ffmpeg_res?;
+    if let Err(e) = &ffmpeg_res {
+        update_job_status(&state.dashboard, uuid.clone(), "Convert (Sync)", "Failed", 0, Some(e.to_string()));
+        ffmpeg_res?;
+    }
+
+    update_job_status(&state.dashboard, uuid.clone(), "Convert (Sync)", "Success", 0, None);
 
     // Stream the response back
     let file = File::open(&out_path).await?;
@@ -455,6 +559,7 @@ async fn convert_media_async(
     // Route based on Redis availability
     if let Some(mut manager) = state.redis_manager {
         // Mode 2: Redis queueing enabled
+        update_job_status(&state.dashboard, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Enqueued", 0, None);
         let job = Job {
             id: Uuid::new_v4().to_string(),
             job_type: JobType::Convert {
@@ -478,8 +583,10 @@ async fn convert_media_async(
         ).into_response())
     } else {
         // Mode 1: No Redis - Simple asynchronous task spawning
+        update_job_status(&state.dashboard, uuid.clone(), &format!("Convert (Simple Async: {})", output_format), "Processing", 0, None);
         let client = state.http_client.clone();
         let storage_dir = state.storage_dir.clone();
+        let dashboard = state.dashboard.clone();
         let uuid_clone = uuid.clone();
         tokio::spawn(async move {
             info!("Enqueued simple background task (No Redis) for UUID {}", uuid_clone);
@@ -489,16 +596,17 @@ async fn convert_media_async(
 
             if let Err(e) = res {
                 error!("Simple background conversion failed for UUID {}: {:?}", uuid_clone, e);
+                update_job_status(&dashboard, uuid_clone.clone(), &format!("Convert (Simple Async: {})", output_format), "Failed", 0, Some(e.to_string()));
                 let _ = send_simple_webhook_error(&client, &callback_url, &uuid_clone, &e.to_string()).await;
                 return;
             }
+
+            update_job_status(&dashboard, uuid_clone.clone(), &format!("Convert (Simple Async: {})", output_format), "Success", 0, None);
 
             // Webhook payload: check if we should send file or just info
             let webhook_res = if include_file {
                 send_webhook_with_file(&client, &callback_url, &uuid_clone, &out_path, &output_format).await
             } else {
-                // Since this simple mode doesn't store files permanently (no automatic 24h cleanup without Redis),
-                // we'll send it but warn that download endpoints need Redis, or just send success status.
                 send_simple_webhook_success(&client, &callback_url, &uuid_clone, "success").await
             };
 
@@ -568,6 +676,380 @@ async fn download_file_endpoint(
     Ok(response)
 }
 
+async fn dashboard_page() -> Html<String> {
+    Html(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chambapro FFmpeg API - Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #0b0d13;
+            --bg-surface: rgba(20, 24, 38, 0.6);
+            --border-glow: rgba(99, 102, 241, 0.2);
+            --primary: #6366f1;
+            --primary-glow: rgba(99, 102, 241, 0.4);
+            --success: #10b981;
+            --success-glow: rgba(16, 185, 129, 0.2);
+            --error: #ef4444;
+            --error-glow: rgba(239, 68, 68, 0.2);
+            --warning: #f59e0b;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            min-height: 100vh;
+            padding: 2rem;
+            background-image: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.05) 0%, transparent 40%),
+                              radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 40%);
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #a5b4fc, #818cf8, #6366f1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .badge-live {
+            background: var(--success-glow);
+            color: var(--success);
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            box-shadow: 0 0 10px var(--success-glow);
+        }
+
+        .badge-live::before {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: var(--success);
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.6; }
+            50% { transform: scale(1.2); opacity: 1; }
+            100% { transform: scale(0.9); opacity: 0.6; }
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--bg-surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 1.5rem;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: var(--primary-glow);
+        }
+
+        .stat-label {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .stat-value {
+            font-size: 2.2rem;
+            font-weight: 700;
+        }
+
+        .grid-layout {
+            display: grid;
+            grid-template-columns: 1.3fr 1fr;
+            gap: 2rem;
+        }
+
+        @media (max-width: 1024px) {
+            .grid-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: var(--bg-surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            padding: 1.5rem;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            height: 600px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .card-header {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1.25rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .table-container {
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th {
+            padding: 0.75rem 1rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            font-weight: 600;
+        }
+
+        td {
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            font-size: 0.9rem;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-enqueued { background: rgba(99, 102, 241, 0.15); color: #818cf8; }
+        .status-processing { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+        .status-success { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+        .status-failed { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+
+        .terminal {
+            flex-grow: 1;
+            background: #050608;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            overflow-y: auto;
+            color: #d1d5db;
+        }
+
+        .log-line {
+            margin-bottom: 0.35rem;
+            word-break: break-all;
+        }
+
+        .log-info { color: #818cf8; }
+        .log-warn { color: #fbbf24; }
+        .log-error { color: #f87171; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Chambapro FFmpeg API 🚀</h1>
+        <div class="badge-live">LIVE FEED</div>
+    </header>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-label">Total Jobs</div>
+            <div id="stat-total" class="stat-value">0</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Processing</div>
+            <div id="stat-processing" class="stat-value" style="color: var(--warning);">0</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Success</div>
+            <div id="stat-success" class="stat-value" style="color: var(--success);">0</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Failed</div>
+            <div id="stat-failed" class="stat-value" style="color: var(--error);">0</div>
+        </div>
+    </div>
+
+    <div class="grid-layout">
+        <!-- Jobs Panel -->
+        <div class="card">
+            <div class="card-header">
+                <span>Recent Processes</span>
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>UUID</th>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Retries</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobs-tbody">
+                        <!-- Dynamic content -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Terminal Logs Panel -->
+        <div class="card">
+            <div class="card-header">
+                <span>Process Logs (Stdout)</span>
+            </div>
+            <div id="log-terminal" class="terminal">
+                <!-- Dynamic content -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function fetchDashboardData() {
+            try {
+                const response = await fetch('/api/dashboard');
+                if (!response.ok) return;
+                const data = await response.json();
+                
+                // Update stats
+                let total = data.jobs.length;
+                let processing = data.jobs.filter(j => j.status === 'Processing').length;
+                let success = data.jobs.filter(j => j.status === 'Success').length;
+                let failed = data.jobs.filter(j => j.status === 'Failed').length;
+
+                document.getElementById('stat-total').innerText = total;
+                document.getElementById('stat-processing').innerText = processing;
+                document.getElementById('stat-success').innerText = success;
+                document.getElementById('stat-failed').innerText = failed;
+
+                // Update Jobs Table
+                const tbody = document.getElementById('jobs-tbody');
+                tbody.innerHTML = '';
+                // Show latest first
+                data.jobs.reverse().forEach(job => {
+                    const tr = document.createElement('tr');
+                    const uuidShort = job.uuid.substring(0, 8) + '...';
+                    const statusClass = 'status-' + job.status.toLowerCase();
+                    
+                    tr.innerHTML = `
+                        <td title="${job.uuid}">${uuidShort}</td>
+                        <td>${job.job_type}</td>
+                        <td><span class="status-badge ${statusClass}">${job.status}</span></td>
+                        <td>${job.retries}</td>
+                        <td>${job.timestamp}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+                // Update Terminal Logs
+                const terminal = document.getElementById('log-terminal');
+                const wasScrolledToBottom = terminal.scrollHeight - terminal.clientHeight <= terminal.scrollTop + 1;
+                
+                terminal.innerHTML = '';
+                data.logs.forEach(line => {
+                    const div = document.createElement('div');
+                    div.className = 'log-line';
+                    
+                    if (line.includes('INFO')) {
+                        div.classList.add('log-info');
+                    } else if (line.includes('WARN')) {
+                        div.classList.add('log-warn');
+                    } else if (line.includes('ERROR')) {
+                        div.classList.add('log-error');
+                    }
+                    
+                    div.innerText = line.trim();
+                    terminal.appendChild(div);
+                });
+
+                if (wasScrolledToBottom) {
+                    terminal.scrollTop = terminal.scrollHeight;
+                }
+
+            } catch (err) {
+                console.error("Dashboard poll error:", err);
+            }
+        }
+
+        // Poll every 1.5 seconds
+        setInterval(fetchDashboardData, 1500);
+        fetchDashboardData();
+    </script>
+</body>
+</html>"#.to_string())
+}
+
+async fn dashboard_api(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if let Ok(data) = state.dashboard.0.read() {
+        Ok(Json(serde_json::json!({
+            "jobs": data.jobs,
+            "logs": data.logs,
+        })))
+    } else {
+        Err(anyhow::anyhow!("Failed to read dashboard state").into())
+    }
+}
+
 // Background queue worker execution loops
 async fn run_queue_workers(
     mut manager: redis::aio::ConnectionManager,
@@ -576,6 +1058,7 @@ async fn run_queue_workers(
     host_url: String,
     max_retries: u32,
     cleanup_hours: u64,
+    dashboard: SharedDashboardState,
 ) -> anyhow::Result<()> {
     info!("Starting Chambapro queue workers...");
 
@@ -649,6 +1132,7 @@ async fn run_queue_workers(
         let client_clone = client.clone();
         let storage_dir_clone = storage_dir.clone();
         let host_url_clone = host_url.clone();
+        let dashboard_clone = dashboard.clone();
 
         tokio::spawn(async move {
             info!("Processing Job ID {} of type {:?}", job.id, job.job_type);
@@ -661,6 +1145,7 @@ async fn run_queue_workers(
                     include_file,
                     retry_count,
                 } => {
+                    update_job_status(&dashboard_clone, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Processing", retry_count, None);
                     let out_path = format!("{}/{}.{}", storage_dir_clone, uuid, output_format);
                     let conversion_res = run_ffmpeg(
                         Path::new(&input_path),
@@ -674,6 +1159,7 @@ async fn run_queue_workers(
                         
                         if next_retry >= max_retries {
                             // Max retries reached, trigger failure webhook
+                            update_job_status(&dashboard_clone, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Failed", max_retries, Some(e.to_string()));
                             let _ = tokio::fs::remove_file(&input_path).await;
                             let fail_job = Job {
                                 id: Uuid::new_v4().to_string(),
@@ -690,6 +1176,7 @@ async fn run_queue_workers(
                             let _ = enqueue_job(&mut manager_clone, fail_job).await;
                         } else {
                             // Retry by enqueueing another conversion job
+                            update_job_status(&dashboard_clone, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Processing", next_retry, Some(e.to_string()));
                             let retry_job = Job {
                                 id: job.id,
                                 job_type: JobType::Convert {
@@ -705,6 +1192,7 @@ async fn run_queue_workers(
                         }
                     } else {
                         // Success!
+                        update_job_status(&dashboard_clone, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Success", retry_count, None);
                         let _ = tokio::fs::remove_file(&input_path).await;
                         
                         // 1. Enqueue Webhook job
@@ -748,6 +1236,7 @@ async fn run_queue_workers(
                     output_format,
                     include_file,
                 } => {
+                    update_job_status(&dashboard_clone, uuid.clone(), "Webhook", "Processing", 0, None);
                     let webhook_res = if success {
                         if include_file {
                             if let Some(path) = &output_path {
@@ -777,13 +1266,17 @@ async fn run_queue_workers(
 
                     if let Err(e) = webhook_res {
                         error!("Webhook delivery failed for Job ID {} targeting URL {}: {:?}", job.id, callback_url, e);
+                        update_job_status(&dashboard_clone, uuid.clone(), "Webhook", "Failed", 0, Some(e.to_string()));
                     } else {
                         info!("Webhook successfully delivered for UUID {}", uuid);
+                        update_job_status(&dashboard_clone, uuid.clone(), "Webhook", "Success", 0, None);
                     }
                 }
                 JobType::Cleanup { uuid, output_path } => {
                     info!("Running scheduled cleanup for UUID {} removing {:?}", uuid, output_path);
+                    update_job_status(&dashboard_clone, uuid.clone(), "Cleanup", "Processing", 0, None);
                     let _ = tokio::fs::remove_file(output_path).await;
+                    update_job_status(&dashboard_clone, uuid.clone(), "Cleanup", "Success", 0, None);
                 }
             }
         });
