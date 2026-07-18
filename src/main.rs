@@ -113,7 +113,8 @@ impl std::io::Write for DashboardLogWriter {
         health_check,
         convert_media,
         convert_media_async,
-        download_file_endpoint
+        download_file_endpoint,
+        admin_cleanup_endpoint
     ),
     info(
         title = "Chambapro FFmpeg API",
@@ -198,6 +199,20 @@ async fn main() -> anyhow::Result<()> {
         info!("Redis URL not configured. Queue-based background processing disabled.");
     }
 
+    // Spawn automatic periodic directory cleanup task (runs every 30 minutes)
+    let storage_dir_cleanup = storage_dir.clone();
+    let cleanup_hours_val = cleanup_hours;
+    let dashboard_state_cleanup = shared_dashboard.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1800)).await;
+            info!("Running periodic automatic directory cleanup scan...");
+            if let Err(e) = perform_directory_cleanup(&storage_dir_cleanup, cleanup_hours_val, &dashboard_state_cleanup).await {
+                error!("Periodic automatic directory cleanup failed: {:?}", e);
+            }
+        }
+    });
+
     let state = AppState {
         http_client: Client::new(),
         api_key,
@@ -217,6 +232,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/convert", post(convert_media))
         .route("/convert-async", post(convert_media_async))
         .route("/download/:file_name", get(download_file_endpoint))
+        .route("/admin/cleanup", post(admin_cleanup_endpoint))
         .route("/dashboard", get(dashboard_page))
         .route("/api/dashboard", get(dashboard_api))
         .merge(utoipa_swagger_ui::SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
@@ -272,6 +288,84 @@ fn update_job_status(
 )]
 async fn health_check() -> &'static str {
     "OK"
+}
+
+async fn perform_directory_cleanup(
+    storage_dir: &str,
+    cleanup_hours: u64,
+    dashboard: &SharedDashboardState,
+) -> anyhow::Result<()> {
+    let mut dir = tokio::fs::read_dir(storage_dir).await?;
+    let now = std::time::SystemTime::now();
+    let max_age = std::time::Duration::from_secs(cleanup_hours * 3600);
+    let mut cleaned_count = 0;
+
+    while let Some(entry) = dir.next_entry().await? {
+        let path = entry.path();
+        if path.is_file() {
+            if let Ok(metadata) = entry.metadata().await {
+                if let Ok(modified) = metadata.modified() {
+                    if let Ok(age) = now.duration_since(modified) {
+                        if age > max_age {
+                            if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                                let uuid_part = file_name.split('.').next().unwrap_or(file_name);
+                                info!("Cleaning up expired file: {:?}", file_name);
+                                if tokio::fs::remove_file(&path).await.is_ok() {
+                                    cleaned_count += 1;
+                                    update_job_status(
+                                        dashboard,
+                                        uuid_part.to_string(),
+                                        "Cleanup (Auto)",
+                                        "Success",
+                                        0,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if cleaned_count > 0 {
+        info!("Directory cleanup finished. Removed {} expired files.", cleaned_count);
+    }
+    Ok(())
+}
+
+#[utoipa::path(
+    post,
+    path = "/admin/cleanup",
+    responses(
+        (status = 200, description = "Directory cleanup triggered successfully", body = String),
+        (status = 401, description = "Unauthorized - Missing or invalid API Key")
+    ),
+    params(
+        ("x-api-key" = Option<String>, Header, description = "Optional API Key for authentication")
+    )
+)]
+async fn admin_cleanup_endpoint(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    if let Some(expected_key) = &state.api_key {
+        let provided_key = headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok());
+
+        if provided_key != Some(expected_key.as_str()) {
+            return Ok((
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized: Missing or invalid X-API-KEY header",
+            ).into_response());
+        }
+    }
+
+    info!("Manual admin cleanup endpoint triggered");
+    perform_directory_cleanup(&state.storage_dir, state.cleanup_hours, &state.dashboard).await?;
+
+    Ok((StatusCode::OK, "Cleanup completed successfully").into_response())
 }
 
 // Custom error type for route handlers
@@ -610,12 +704,11 @@ async fn convert_media_async(
                 send_simple_webhook_success(&client, &callback_url, &uuid_clone, "success").await
             };
 
-            if let Err(e) = webhook_res {
-                error!("Simple background webhook failed for UUID {}: {:?}", uuid_clone, e);
+            // Clean up output file only if it was sent or webhook failed.
+            // If webhook succeeded and include_file is false, keep file for download.
+            if include_file || webhook_res.is_err() {
+                let _ = tokio::fs::remove_file(&out_path).await;
             }
-
-            // Clean up output file
-            let _ = tokio::fs::remove_file(&out_path).await;
         });
 
         Ok((

@@ -117,6 +117,9 @@ Downloads a converted file from storage (e.g. `/download/<uuid>.mp3`). Returns a
 ### `GET /dashboard`
 Serves a beautiful, real-time web dashboard displaying current queue metrics (total, pending, success, failed), live job updates, and scrolling stdout process logs.
 
+### `POST /admin/cleanup`
+Manually triggers a file cleanup scan in `STORAGE_DIR`, removing any uploaded or converted files older than `CLEANUP_HOURS`. (Guarded by `X-API-KEY` if enabled).
+
 ---
 
 ## 🚀 Examples

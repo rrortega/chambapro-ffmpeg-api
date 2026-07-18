@@ -117,6 +117,9 @@ Descarga un archivo convertido del almacenamiento (ej. `/download/<uuid>.mp3`). 
 ### `GET /dashboard`
 Sirve un panel web interactivo en tiempo real que muestra métricas generales de las colas (total, procesando, éxito, fallidos), el estado de los últimos trabajos en cola y el flujo en vivo de los logs de stdout del servicio.
 
+### `POST /admin/cleanup`
+Desencadena manualmente una limpieza del almacenamiento en `STORAGE_DIR`, eliminando cualquier archivo temporal o convertido cuya antigüedad supere las `CLEANUP_HOURS` establecidas. (Protegido por `X-API-KEY` si está activa).
+
 ---
 
 ## 🚀 Ejemplos de Uso

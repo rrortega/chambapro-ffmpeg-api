@@ -23,6 +23,7 @@ docker run -d -p 80:80 \
 - `POST /convert-async` - **Asynchronous** conversion. Requires a `callback_url`. Enqueues jobs in Redis (if configured) or executes in background (no Redis).
 - `GET /download/:file_name` - Downloads converted files.
 - `GET /dashboard` - Serves a beautiful, real-time web dashboard for queue status and stdout logs.
+- `POST /admin/cleanup` - Manually triggers cleanup of old temporary files in storage.
 
 
 ### 3. Usage Examples
@@ -61,6 +62,7 @@ docker run -d -p 80:80 \
 - `POST /convert-async` - Conversión **asíncrona**. Requiere un `callback_url`. Encola tareas en Redis (si está configurado) o procesa en segundo plano (sin Redis).
 - `GET /download/:file_name` - Descarga de archivos convertidos.
 - `GET /dashboard` - Sirve un panel interactivo en tiempo real para visualizar colas y logs.
+- `POST /admin/cleanup` - Desencadena manualmente la depuración de archivos antiguos.
 
 ### 3. Ejemplos de Uso
 **Conversión Síncrona:**
