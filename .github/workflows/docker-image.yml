@@ -25,7 +25,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 4. Construye la imagen y la sube a Docker Hub
+      # 4. Construye la imagen y la sube a Docker Hub (con caché de GitHub Actions habilitado)
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -34,3 +34,5 @@ jobs:
           # Etiqueta la imagen con tu usuario y el nombre del repositorio
           # Usa 'latest' para la rama principal
           tags: ${{ secrets.DOCKER_USERNAME }}/${{ github.event.repository.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
