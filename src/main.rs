@@ -1,7 +1,8 @@
 use axum::{
     body::Body,
     extract::{Multipart, Path as AxumPath, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, Request, StatusCode},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json,
@@ -32,9 +33,18 @@ struct DashboardJob {
     timestamp: String,
 }
 
+#[derive(Serialize, Clone, Debug)]
+struct RequestMetric {
+    timestamp: String, // RFC3339 string
+    duration_ms: u64,
+    endpoint: String,
+    status: u16,
+}
+
 struct DashboardState {
     jobs: Vec<DashboardJob>,
     logs: Vec<String>,
+    metrics: Vec<RequestMetric>,
 }
 
 #[derive(Clone)]
@@ -131,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
     let dashboard_state = Arc::new(RwLock::new(DashboardState {
         jobs: Vec::new(),
         logs: Vec::new(),
+        metrics: Vec::new(),
     }));
 
     let writer = DashboardLogWriter {
@@ -224,8 +235,6 @@ async fn main() -> anyhow::Result<()> {
         dashboard: shared_dashboard.clone(),
     };
 
-
-
     let app = Router::new()
         .route("/", get(|| async { axum::response::Redirect::permanent("/docs") }))
         .route("/health", get(health_check))
@@ -235,6 +244,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/cleanup", post(admin_cleanup_endpoint))
         .route("/dashboard", get(dashboard_page))
         .route("/api/dashboard", get(dashboard_api))
+        .layer(middleware::from_fn_with_state(state.clone(), track_metrics))
         .merge(utoipa_swagger_ui::SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state);
 
@@ -246,6 +256,40 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn track_metrics(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let start = std::time::Instant::now();
+    let path = req.uri().path().to_string();
+
+    let is_api_metric = !path.starts_with("/dashboard")
+        && !path.starts_with("/api/dashboard")
+        && !path.starts_with("/docs")
+        && !path.starts_with("/api-docs");
+
+    let response = next.run(req).await;
+
+    if is_api_metric {
+        let duration = start.elapsed().as_millis() as u64;
+        let status = response.status().as_u16();
+        if let Ok(mut db_state) = state.dashboard.0.write() {
+            db_state.metrics.push(RequestMetric {
+                timestamp: chrono::Local::now().to_rfc3339(),
+                duration_ms: duration,
+                endpoint: path,
+                status,
+            });
+            if db_state.metrics.len() > 1000 {
+                db_state.metrics.remove(0);
+            }
+        }
+    }
+
+    response
 }
 
 fn update_job_status(
@@ -704,9 +748,14 @@ async fn convert_media_async(
                 send_simple_webhook_success(&client, &callback_url, &uuid_clone, "success").await
             };
 
+            let is_err = webhook_res.is_err();
+            if let Err(e) = webhook_res {
+                error!("Simple background webhook failed for UUID {}: {:?}", uuid_clone, e);
+            }
+
             // Clean up output file only if it was sent or webhook failed.
             // If webhook succeeded and include_file is false, keep file for download.
-            if include_file || webhook_res.is_err() {
+            if include_file || is_err {
                 let _ = tokio::fs::remove_file(&out_path).await;
             }
         });
@@ -770,13 +819,14 @@ async fn download_file_endpoint(
 }
 
 async fn dashboard_page() -> Html<String> {
-    Html(r#"<!DOCTYPE html>
+    Html(r##"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chambapro FFmpeg API - Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
     <style>
         :root {
             --bg-base: #0b0d13;
@@ -805,6 +855,7 @@ async fn dashboard_page() -> Html<String> {
             font-family: 'Outfit', sans-serif;
             min-height: 100vh;
             padding: 2rem;
+            padding-bottom: 5rem;
             background-image: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.05) 0%, transparent 40%),
                               radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 40%);
         }
@@ -898,6 +949,7 @@ async fn dashboard_page() -> Html<String> {
             display: grid;
             grid-template-columns: 1.3fr 1fr;
             gap: 2rem;
+            margin-bottom: 2rem;
         }
 
         @media (max-width: 1024px) {
@@ -913,9 +965,9 @@ async fn dashboard_page() -> Html<String> {
             border-radius: 20px;
             padding: 1.5rem;
             box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-            height: 600px;
             display: flex;
             flex-direction: column;
+            margin-bottom: 2rem;
         }
 
         .card-header {
@@ -928,8 +980,8 @@ async fn dashboard_page() -> Html<String> {
         }
 
         .table-container {
-            flex-grow: 1;
             overflow-y: auto;
+            max-height: 400px;
         }
 
         table {
@@ -971,6 +1023,70 @@ async fn dashboard_page() -> Html<String> {
         .status-success { background: rgba(16, 185, 129, 0.15); color: #34d399; }
         .status-failed { background: rgba(239, 68, 68, 0.15); color: #f87171; }
 
+        /* Logs Drawer Styling */
+        .drawer-toggle-btn {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(20, 24, 38, 0.95);
+            border-top: 1px solid var(--primary-glow);
+            padding: 1rem;
+            text-align: center;
+            cursor: pointer;
+            z-index: 100;
+            font-weight: 600;
+            color: #818cf8;
+            box-shadow: 0 -5px 20px rgba(0,0,0,0.5);
+            transition: background 0.3s;
+        }
+
+        .drawer-toggle-btn:hover {
+            background: rgba(30, 36, 56, 0.98);
+        }
+
+        .drawer {
+            position: fixed;
+            bottom: -500px;
+            left: 0;
+            right: 0;
+            height: 450px;
+            background: #090b10;
+            border-top: 1px solid var(--primary-glow);
+            box-shadow: 0 -10px 40px rgba(0,0,0,0.8);
+            z-index: 101;
+            transition: bottom 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            display: flex;
+            flex-direction: column;
+            padding: 1.5rem;
+        }
+
+        .drawer.open {
+            bottom: 0;
+        }
+
+        .drawer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .drawer-close-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-main);
+            padding: 0.3rem 0.8rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: background 0.3s;
+        }
+
+        .drawer-close-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
         .terminal {
             flex-grow: 1;
             background: #050608;
@@ -992,6 +1108,21 @@ async fn dashboard_page() -> Html<String> {
         .log-info { color: #818cf8; }
         .log-warn { color: #fbbf24; }
         .log-error { color: #f87171; }
+
+        select.chart-selector {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: var(--text-main);
+            padding: 0.4rem 0.8rem;
+            border-radius: 8px;
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        select.chart-selector:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
     </style>
 </head>
 <body>
@@ -1020,48 +1151,231 @@ async fn dashboard_page() -> Html<String> {
         </div>
     </div>
 
+    <!-- Charts Layout Grid -->
     <div class="grid-layout">
-        <!-- Jobs Panel -->
-        <div class="card">
+        <!-- Performance Metric Chart -->
+        <div class="card" style="height: 380px;">
             <div class="card-header">
-                <span>Recent Processes</span>
+                <span>API Traffic & Latency</span>
+                <select id="granularity" class="chart-selector" onchange="updateMetricChart()">
+                    <option value="minute">Minute</option>
+                    <option value="hour" selected>Hour</option>
+                    <option value="day">Day</option>
+                </</select>
             </div>
-            <div class="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>UUID</th>
-                            <th>Type</th>
-                            <th>Status</th>
-                            <th>Retries</th>
-                            <th>Time</th>
-                        </tr>
-                    </thead>
-                    <tbody id="jobs-tbody">
-                        <!-- Dynamic content -->
-                    </tbody>
-                </table>
-            </div>
+            <div id="metric-chart" style="height: 280px;"></div>
         </div>
 
-        <!-- Terminal Logs Panel -->
-        <div class="card">
+        <!-- Monthly Activity Heatmap -->
+        <div class="card" style="height: 380px;">
             <div class="card-header">
-                <span>Process Logs (Stdout)</span>
+                <span>Monthly Activity Heatmap</span>
             </div>
-            <div id="log-terminal" class="terminal">
-                <!-- Dynamic content -->
-            </div>
+            <div id="heatmap-chart" style="height: 280px;"></div>
+        </div>
+    </div>
+
+    <!-- Recent Processes Panel (Full width) -->
+    <div class="card">
+        <div class="card-header">
+            <span>Recent Processes</span>
+        </div>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>UUID</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Retries</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody id="jobs-tbody">
+                    <!-- Dynamic content -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Bottom Sticky Toggle Button for stdout -->
+    <div id="toggle-drawer-btn" class="drawer-toggle-btn" onclick="openDrawer()">
+        📁 Show Live stdout & process logs
+    </div>
+
+    <!-- Terminal Logs Drawer (slides from bottom) -->
+    <div id="logs-drawer" class="drawer">
+        <div class="drawer-header">
+            <span style="font-weight: 600; font-size: 1.1rem; color: #818cf8;">stdout & process logs</span>
+            <button class="drawer-close-btn" onclick="closeDrawer()">Collapse Drawer ✕</button>
+        </div>
+        <div id="log-terminal" class="terminal">
+            <!-- Dynamic content -->
         </div>
     </div>
 
     <script>
+        let metricChartObj = null;
+        let heatmapChartObj = null;
+        let cachedMetrics = [];
+        let cachedJobs = [];
+
+        function openDrawer() {
+            document.getElementById('logs-drawer').classList.add('open');
+            document.getElementById('toggle-drawer-btn').style.display = 'none';
+            const term = document.getElementById('log-terminal');
+            term.scrollTop = term.scrollHeight;
+        }
+
+        function closeDrawer() {
+            document.getElementById('logs-drawer').classList.remove('open');
+            setTimeout(() => {
+                document.getElementById('toggle-drawer-btn').style.display = 'block';
+            }, 300);
+        }
+
+        function updateMetricChart() {
+            const granularity = document.getElementById('granularity').value;
+            const buckets = {};
+
+            // Group metrics by granularity
+            cachedMetrics.forEach(m => {
+                const date = new Date(m.timestamp);
+                let key = '';
+
+                if (granularity === 'minute') {
+                    key = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+                } else if (granularity === 'hour') {
+                    key = `${date.getHours().toString().padStart(2, '0')}:00`;
+                } else { // day
+                    key = `${date.getMonth() + 1}/${date.getDate()}`;
+                }
+
+                if (!buckets[key]) {
+                    buckets[key] = { count: 0, total_duration: 0 };
+                }
+                buckets[key].count += 1;
+                buckets[key].total_duration += m.duration_ms;
+            });
+
+            // Get last 15 sorted categories
+            const sortedKeys = Object.keys(buckets).sort().slice(-15);
+            const counts = sortedKeys.map(k => buckets[k].count);
+            const avgDurations = sortedKeys.map(k => Math.round(buckets[k].total_duration / buckets[k].count));
+
+            const options = {
+                series: [
+                    { name: 'Requests', type: 'column', data: counts },
+                    { name: 'Avg Latency (ms)', type: 'line', data: avgDurations }
+                ],
+                chart: {
+                    height: 280,
+                    type: 'line',
+                    toolbar: { show: false },
+                    background: 'transparent'
+                },
+                theme: { mode: 'dark' },
+                stroke: { width: [0, 3], curve: 'smooth' },
+                colors: ['#6366f1', '#10b981'],
+                dataLabels: { enabled: false },
+                labels: sortedKeys,
+                yaxis: [
+                    { title: { text: 'Requests' } },
+                    { opposite: true, title: { text: 'Latency (ms)' } }
+                ],
+                grid: { borderColor: 'rgba(255,255,255,0.05)' }
+            };
+
+            if (metricChartObj) {
+                metricChartObj.updateOptions(options);
+            } else {
+                metricChartObj = new ApexCharts(document.getElementById('metric-chart'), options);
+                metricChartObj.render();
+            }
+        }
+
+        function updateHeatmap() {
+            // Heatmap over the last month: Day of the week vs Days grouped into weeks
+            const now = new Date();
+            const daysData = {};
+            
+            // Initialize last 30 days to 0
+            for (let i = 29; i >= 0; i--) {
+                const d = new Date();
+                d.setDate(now.getDate() - i);
+                const dayKey = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+                daysData[dayKey] = 0;
+            }
+
+            // Aggregate metrics (traffic activity) per day
+            cachedMetrics.forEach(m => {
+                const date = new Date(m.timestamp);
+                const dayKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
+                if (daysData[dayKey] !== undefined) {
+                    daysData[dayKey] += 1;
+                }
+            });
+
+            // Group into 7 rows for days of the week: Mon, Tue, Wed, Thu, Fri, Sat, Sun
+            const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const series = daysOfWeek.map((dayName, idx) => {
+                const data = [];
+                for (let week = 0; week < 5; week++) {
+                    // Backtrack days to structure a grid
+                    const d = new Date();
+                    d.setDate(now.getDate() - (4 - week) * 7 + (idx - now.getDay()));
+                    const dayKey = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+                    const count = daysData[dayKey] || 0;
+                    data.push({ x: `W${week+1}`, y: count });
+                }
+                return { name: dayName, data: data };
+            });
+
+            const options = {
+                series: series,
+                chart: {
+                    height: 280,
+                    type: 'heatmap',
+                    toolbar: { show: false }
+                },
+                theme: { mode: 'dark' },
+                dataLabels: { enabled: false },
+                colors: ["#6366f1"],
+                plotOptions: {
+                    heatmap: {
+                        shadeIntensity: 0.5,
+                        radius: 0,
+                        useFillColorAsStroke: true,
+                        colorScale: {
+                            ranges: [
+                                { from: 0, to: 0, name: 'Inactive', color: 'rgba(255,255,255,0.03)' },
+                                { from: 1, to: 5, name: 'Low', color: 'rgba(99, 102, 241, 0.3)' },
+                                { from: 6, to: 15, name: 'Medium', color: 'rgba(99, 102, 241, 0.6)' },
+                                { from: 16, to: 1000, name: 'High', color: '#6366f1' }
+                            ]
+                        }
+                    }
+                }
+            };
+
+            if (heatmapChartObj) {
+                heatmapChartObj.updateOptions(options);
+            } else {
+                heatmapChartObj = new ApexCharts(document.getElementById('heatmap-chart'), options);
+                heatmapChartObj.render();
+            }
+        }
+
         async function fetchDashboardData() {
             try {
                 const response = await fetch('/api/dashboard');
                 if (!response.ok) return;
                 const data = await response.json();
                 
+                // Update cached variables
+                cachedMetrics = data.metrics || [];
+                cachedJobs = data.jobs || [];
+
                 // Update stats
                 let total = data.jobs.length;
                 let processing = data.jobs.filter(j => j.status === 'Processing').length;
@@ -1117,17 +1431,21 @@ async fn dashboard_page() -> Html<String> {
                     terminal.scrollTop = terminal.scrollHeight;
                 }
 
+                // Render or update charts
+                updateMetricChart();
+                updateHeatmap();
+
             } catch (err) {
                 console.error("Dashboard poll error:", err);
             }
         }
 
-        // Poll every 1.5 seconds
-        setInterval(fetchDashboardData, 1500);
+        // Poll every 2.0 seconds to keep performance lightweight
+        setInterval(fetchDashboardData, 2000);
         fetchDashboardData();
     </script>
 </body>
-</html>"#.to_string())
+</html>"##.to_string())
 }
 
 async fn dashboard_api(
@@ -1137,6 +1455,7 @@ async fn dashboard_api(
         Ok(Json(serde_json::json!({
             "jobs": data.jobs,
             "logs": data.logs,
+            "metrics": data.metrics,
         })))
     } else {
         Err(anyhow::anyhow!("Failed to read dashboard state").into())
