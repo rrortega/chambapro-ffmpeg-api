@@ -115,19 +115,21 @@ pub async fn run_queue_workers(
                         if next_retry >= max_retries {
                             update_job_status(&dashboard_clone, uuid.clone(), &job_type_str, "Failed", max_retries, Some(e.to_string()));
                             let _ = tokio::fs::remove_file(&input_path).await;
-                            let fail_job = Job {
-                                id: Uuid::new_v4().to_string(),
-                                job_type: JobType::Webhook {
-                                    uuid,
-                                    callback_url,
-                                    success: false,
-                                    error_message: Some(format!("Conversion failed after {} attempts: {:?}", max_retries, e)),
-                                    output_path: None,
-                                    output_format,
-                                    include_file,
-                                },
-                            };
-                            let _ = enqueue_job(&mut manager_clone, fail_job).await;
+                            if !callback_url.is_empty() {
+                                let fail_job = Job {
+                                    id: Uuid::new_v4().to_string(),
+                                    job_type: JobType::Webhook {
+                                        uuid,
+                                        callback_url,
+                                        success: false,
+                                        error_message: Some(format!("Conversion failed after {} attempts: {:?}", max_retries, e)),
+                                        output_path: None,
+                                        output_format,
+                                        include_file,
+                                    },
+                                };
+                                let _ = enqueue_job(&mut manager_clone, fail_job).await;
+                            }
                         } else {
                             update_job_status(&dashboard_clone, uuid.clone(), &job_type_str, "Processing", next_retry, Some(e.to_string()));
                             let retry_job = Job {
@@ -147,19 +149,21 @@ pub async fn run_queue_workers(
                         update_job_status(&dashboard_clone, uuid.clone(), &job_type_str, "Success", retry_count, None);
                         let _ = tokio::fs::remove_file(&input_path).await;
                         
-                        let webhook_job = Job {
-                            id: Uuid::new_v4().to_string(),
-                            job_type: JobType::Webhook {
-                                uuid: uuid.clone(),
-                                callback_url,
-                                success: true,
-                                error_message: None,
-                                output_path: Some(out_path.clone()),
-                                output_format,
-                                include_file,
-                            },
-                        };
-                        let _ = enqueue_job(&mut manager_clone, webhook_job).await;
+                        if !callback_url.is_empty() {
+                            let webhook_job = Job {
+                                id: Uuid::new_v4().to_string(),
+                                job_type: JobType::Webhook {
+                                    uuid: uuid.clone(),
+                                    callback_url,
+                                    success: true,
+                                    error_message: None,
+                                    output_path: Some(out_path.clone()),
+                                    output_format,
+                                    include_file,
+                                },
+                            };
+                            let _ = enqueue_job(&mut manager_clone, webhook_job).await;
+                        }
 
                         let cleanup_job = Job {
                             id: Uuid::new_v4().to_string(),

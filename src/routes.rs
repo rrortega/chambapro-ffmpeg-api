@@ -284,10 +284,7 @@ pub async fn convert_media_async(
         }
     }
 
-    let callback_url = match callback_url_opt {
-        Some(url) => url,
-        None => return Ok((StatusCode::BAD_REQUEST, "Missing 'callback_url' field").into_response()),
-    };
+    let callback_url = callback_url_opt.unwrap_or_default();
 
     if let Some(url_str) = &url_opt {
         if let Ok(parsed_url) = reqwest::Url::parse(url_str) {
@@ -354,28 +351,32 @@ pub async fn convert_media_async(
             let res = run_ffmpeg(Path::new(&input_path), Path::new(&out_path), &output_format).await;
             let _ = tokio::fs::remove_file(&input_path).await;
 
-            if let Err(e) = res {
+             if let Err(e) = res {
                 error!("Simple background conversion failed for UUID {}: {:?}", uuid_clone, e);
                 update_job_status(&dashboard, uuid_clone.clone(), &job_type_str, "Failed", 0, Some(e.to_string()));
-                let _ = send_simple_webhook_error(&client, &callback_url, &uuid_clone, &e.to_string()).await;
+                if !callback_url.is_empty() {
+                    let _ = send_simple_webhook_error(&client, &callback_url, &uuid_clone, &e.to_string()).await;
+                }
                 return;
             }
 
             update_job_status(&dashboard, uuid_clone.clone(), &job_type_str, "Success", 0, None);
 
-            let webhook_res = if include_file {
-                send_webhook_with_file(&client, &callback_url, &uuid_clone, &out_path, &output_format).await
-            } else {
-                send_simple_webhook_success(&client, &callback_url, &uuid_clone, "success").await
-            };
+            if !callback_url.is_empty() {
+                let webhook_res = if include_file {
+                    send_webhook_with_file(&client, &callback_url, &uuid_clone, &out_path, &output_format).await
+                } else {
+                    send_simple_webhook_success(&client, &callback_url, &uuid_clone, "success").await
+                };
 
-            let is_err = webhook_res.is_err();
-            if let Err(e) = webhook_res {
-                error!("Simple background webhook failed for UUID {}: {:?}", uuid_clone, e);
-            }
+                let is_err = webhook_res.is_err();
+                if let Err(e) = webhook_res {
+                    error!("Simple background webhook failed for UUID {}: {:?}", uuid_clone, e);
+                }
 
-            if include_file || is_err {
-                let _ = tokio::fs::remove_file(&out_path).await;
+                if include_file || is_err {
+                    let _ = tokio::fs::remove_file(&out_path).await;
+                }
             }
         });
 
