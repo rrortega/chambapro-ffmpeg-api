@@ -197,7 +197,6 @@ async fn save_job_to_disk(storage_dir: &str, job: &DashboardJob) {
 // Persist a request metric to disk
 async fn save_metric_to_disk(storage_dir: &str, metric: &RequestMetric) {
     let metrics_dir = format!("{}/dashboard/metrics", storage_dir);
-    // Use UUID for unique filenames
     let path = format!("{}/{}.json", metrics_dir, Uuid::new_v4());
     if let Ok(content) = serde_json::to_string(metric) {
         let _ = tokio::fs::write(path, content).await;
@@ -419,6 +418,10 @@ fn update_job_status(
             job.retries = retries;
             job.error = error.clone();
             job.timestamp = timestamp.clone();
+            // Preserve the original formats if enqueued or processing
+            if !job_type.contains("Webhook") && !job_type.contains("Cleanup") {
+                job.job_type = job_type.to_string();
+            }
             job_updated = Some(job.clone());
         } else {
             let new_job = DashboardJob {
@@ -438,9 +441,6 @@ fn update_job_status(
 
         // Write updated job to disk asynchronously
         if let Some(job) = job_updated {
-            // Find storage directory from thread local or we can derive it from the job path.
-            // Since we don't have direct AppState here, we can derive the directory or use standard fallback "./storage".
-            // Since STORAGE_DIR defaults to "./storage", we write there or check environment
             let storage_dir = std::env::var("STORAGE_DIR").unwrap_or_else(|_| "./storage".to_string());
             tokio::spawn(async move {
                 save_job_to_disk(&storage_dir, &job).await;
@@ -527,7 +527,6 @@ async fn perform_directory_cleanup(
     // Scan regular temp uploaded / converted files
     while let Some(entry) = dir.next_entry().await? {
         let path = entry.path();
-        // Ignore dashboard folder to prevent deleting cache files here
         if path.is_file() {
             if let Ok(metadata) = entry.metadata().await {
                 if let Ok(modified) = metadata.modified() {
@@ -558,7 +557,6 @@ async fn perform_directory_cleanup(
         info!("Directory cleanup finished. Removed {} expired files.", cleaned_count);
     }
 
-    // Perform retention cleanup for dashboard history (30 days)
     let _ = perform_dashboard_disk_cleanup(storage_dir).await;
 
     // Clean up memory cache vectors to prevent endless leaks in RAM
@@ -666,7 +664,6 @@ async fn convert_media(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Response, AppError> {
-    // API Key Authentication Guard
     if let Some(expected_key) = &state.api_key {
         let provided_key = headers
             .get("x-api-key")
@@ -728,7 +725,6 @@ async fn convert_media(
     }
 
     if has_callback {
-        // Clean up uploaded file if present
         if let Some(path) = input_file_opt {
             let _ = tokio::fs::remove_file(path).await;
         }
@@ -753,28 +749,29 @@ async fn convert_media(
     let uuid = Uuid::new_v4().to_string();
     let out_path = format!("{}/{}.{}", state.storage_dir, uuid, output_format);
 
-    update_job_status(&state.dashboard, uuid.clone(), "Convert (Sync)", "Processing", 0, None);
+    let input_ext = Path::new(&input_path).extension().and_then(|s| s.to_str()).unwrap_or("unknown");
+    let job_type_str = format!("Convert (Sync: {} -> {})", input_ext, output_format);
+
+    update_job_status(&state.dashboard, uuid.clone(), &job_type_str, "Processing", 0, None);
 
     // Call ffmpeg synchronously
     let ffmpeg_res = run_ffmpeg(Path::new(&input_path), Path::new(&out_path), &output_format).await;
 
-    // Cleanup input file immediately after ffmpeg runs
     let _ = tokio::fs::remove_file(&input_path).await;
 
     // Check ffmpeg result
     if let Err(e) = &ffmpeg_res {
-        update_job_status(&state.dashboard, uuid.clone(), "Convert (Sync)", "Failed", 0, Some(e.to_string()));
+        update_job_status(&state.dashboard, uuid.clone(), &job_type_str, "Failed", 0, Some(e.to_string()));
         ffmpeg_res?;
     }
 
-    update_job_status(&state.dashboard, uuid.clone(), "Convert (Sync)", "Success", 0, None);
+    update_job_status(&state.dashboard, uuid.clone(), &job_type_str, "Success", 0, None);
 
     // Stream the response back
     let file = File::open(&out_path).await?;
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
-    // Get the file size for content-length if possible
     let meta = tokio::fs::metadata(&out_path).await?;
     
     let content_type = match output_format.as_str() {
@@ -794,7 +791,6 @@ async fn convert_media(
         .body(body)
         .unwrap();
 
-    // Spawn task to delete the output file on Unix as file descriptors can remain open
     let out_path_clone = out_path.clone();
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
@@ -821,7 +817,6 @@ async fn convert_media_async(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Response, AppError> {
-    // API Key Authentication Guard
     if let Some(expected_key) = &state.api_key {
         let provided_key = headers
             .get("x-api-key")
@@ -907,11 +902,14 @@ async fn convert_media_async(
     };
 
     let uuid = Uuid::new_v4().to_string();
+    let input_ext = Path::new(&input_path).extension().and_then(|s| s.to_str()).unwrap_or("unknown");
 
     // Route based on Redis availability
     if let Some(mut manager) = state.redis_manager {
         // Mode 2: Redis queueing enabled
-        update_job_status(&state.dashboard, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Enqueued", 0, None);
+        let job_type_str = format!("Convert (Redis: {} -> {})", input_ext, output_format);
+        update_job_status(&state.dashboard, uuid.clone(), &job_type_str, "Enqueued", 0, None);
+        
         let job = Job {
             id: Uuid::new_v4().to_string(),
             job_type: JobType::Convert {
@@ -935,11 +933,14 @@ async fn convert_media_async(
         ).into_response())
     } else {
         // Mode 1: No Redis - Simple asynchronous task spawning
-        update_job_status(&state.dashboard, uuid.clone(), &format!("Convert (Simple Async: {})", output_format), "Processing", 0, None);
+        let job_type_str = format!("Convert (Simple Async: {} -> {})", input_ext, output_format);
+        update_job_status(&state.dashboard, uuid.clone(), &job_type_str, "Processing", 0, None);
+        
         let client = state.http_client.clone();
         let storage_dir = state.storage_dir.clone();
         let dashboard = state.dashboard.clone();
         let uuid_clone = uuid.clone();
+        
         tokio::spawn(async move {
             info!("Enqueued simple background task (No Redis) for UUID {}", uuid_clone);
             let out_path = format!("{}/{}.{}", storage_dir, uuid_clone, output_format);
@@ -948,14 +949,13 @@ async fn convert_media_async(
 
             if let Err(e) = res {
                 error!("Simple background conversion failed for UUID {}: {:?}", uuid_clone, e);
-                update_job_status(&dashboard, uuid_clone.clone(), &format!("Convert (Simple Async: {})", output_format), "Failed", 0, Some(e.to_string()));
+                update_job_status(&dashboard, uuid_clone.clone(), &job_type_str, "Failed", 0, Some(e.to_string()));
                 let _ = send_simple_webhook_error(&client, &callback_url, &uuid_clone, &e.to_string()).await;
                 return;
             }
 
-            update_job_status(&dashboard, uuid_clone.clone(), &format!("Convert (Simple Async: {})", output_format), "Success", 0, None);
+            update_job_status(&dashboard, uuid_clone.clone(), &job_type_str, "Success", 0, None);
 
-            // Webhook payload: check if we should send file or just info
             let webhook_res = if include_file {
                 send_webhook_with_file(&client, &callback_url, &uuid_clone, &out_path, &output_format).await
             } else {
@@ -967,8 +967,6 @@ async fn convert_media_async(
                 error!("Simple background webhook failed for UUID {}: {:?}", uuid_clone, e);
             }
 
-            // Clean up output file only if it was sent or webhook failed.
-            // If webhook succeeded and include_file is false, keep file for download.
             if include_file || is_err {
                 let _ = tokio::fs::remove_file(&out_path).await;
             }
@@ -1157,6 +1155,61 @@ async fn dashboard_page() -> Html<String> {
         .stat-value {
             font-size: 2.2rem;
             font-weight: 700;
+        }
+
+        /* KPI Subgrid section */
+        .kpis-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .kpi-card {
+            background: var(--bg-surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 1.25rem;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+        }
+
+        .kpi-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .kpi-bar-row {
+            margin-bottom: 0.75rem;
+        }
+
+        .kpi-bar-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            margin-bottom: 0.25rem;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .kpi-bar-outer {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 9999px;
+            overflow: hidden;
+        }
+
+        .kpi-bar-inner {
+            height: 100%;
+            background: var(--primary);
+            border-radius: 9999px;
+            width: 0%;
+            transition: width 0.5s ease;
         }
 
         .grid-layout {
@@ -1365,6 +1418,33 @@ async fn dashboard_page() -> Html<String> {
         </div>
     </div>
 
+    <!-- KPI Section -->
+    <div class="kpis-grid">
+        <!-- KPI 1: Execution Mode Split -->
+        <div class="kpi-card">
+            <div class="kpi-title">Execution Mode (Requests) <span style="font-size: 0.8rem; color:#818cf8;">Sync vs Async</span></div>
+            <div id="kpi-modes-container">
+                <!-- Dynamic bars -->
+            </div>
+        </div>
+
+        <!-- KPI 2: Webhooks Delivery metrics -->
+        <div class="kpi-card">
+            <div class="kpi-title">Webhooks Processed <span id="kpi-webhook-rate" style="font-size: 0.95rem; color:#10b981; font-weight:700;">100% Ok</span></div>
+            <div id="kpi-webhooks-container">
+                <!-- Dynamic bars -->
+            </div>
+        </div>
+
+        <!-- KPI 3: Top Format Pairs -->
+        <div class="kpi-card">
+            <div class="kpi-title">Top Format Pairs <span style="font-size: 0.8rem; color:#818cf8;">Input → Output</span></div>
+            <div id="kpi-pairs-container">
+                <!-- Dynamic bars -->
+            </div>
+        </div>
+    </div>
+
     <!-- Charts Layout Grid -->
     <div class="grid-layout">
         <!-- Performance Metric Chart -->
@@ -1383,7 +1463,7 @@ async fn dashboard_page() -> Html<String> {
         <!-- Monthly Activity Heatmap -->
         <div class="card" style="height: 380px;">
             <div class="card-header">
-                <span>Monthly Activity Heatmap</span>
+                <span>Activity (GitHub style)</span>
             </div>
             <div id="heatmap-chart" style="height: 280px;"></div>
         </div>
@@ -1509,7 +1589,6 @@ async fn dashboard_page() -> Html<String> {
         }
 
         function updateHeatmap() {
-            // Heatmap over the last month: Day of the week vs Days grouped into weeks
             const now = new Date();
             const daysData = {};
             
@@ -1535,7 +1614,6 @@ async fn dashboard_page() -> Html<String> {
             const series = daysOfWeek.map((dayName, idx) => {
                 const data = [];
                 for (let week = 0; week < 5; week++) {
-                    // Backtrack days to structure a grid
                     const d = new Date();
                     d.setDate(now.getDate() - (4 - week) * 7 + (idx - now.getDay()));
                     const dayKey = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
@@ -1554,18 +1632,19 @@ async fn dashboard_page() -> Html<String> {
                 },
                 theme: { mode: 'dark' },
                 dataLabels: { enabled: false },
-                colors: ["#6366f1"],
+                // Custom GitHub contributions colors (green gradient)
                 plotOptions: {
                     heatmap: {
                         shadeIntensity: 0.5,
-                        radius: 0,
+                        radius: 2,
                         useFillColorAsStroke: true,
                         colorScale: {
                             ranges: [
-                                { from: 0, to: 0, name: 'Inactive', color: 'rgba(255,255,255,0.03)' },
-                                { from: 1, to: 5, name: 'Low', color: 'rgba(99, 102, 241, 0.3)' },
-                                { from: 6, to: 15, name: 'Medium', color: 'rgba(99, 102, 241, 0.6)' },
-                                { from: 16, to: 1000, name: 'High', color: '#6366f1' }
+                                { from: 0, to: 0, name: 'No activity', color: '#161b22' },
+                                { from: 1, to: 3, name: 'Low', color: '#0e4429' },
+                                { from: 4, to: 7, name: 'Medium', color: '#006d32' },
+                                { from: 8, to: 12, name: 'High', color: '#26a641' },
+                                { from: 13, to: 1000, name: 'Very High', color: '#39d353' }
                             ]
                         }
                     }
@@ -1580,13 +1659,98 @@ async fn dashboard_page() -> Html<String> {
             }
         }
 
+        // Aggregate and update KPI cards
+        function updateKPIs() {
+            // KPI 1: Execution Mode Split
+            let syncCount = cachedMetrics.filter(m => m.endpoint === '/convert').length;
+            let asyncCount = cachedMetrics.filter(m => m.endpoint === '/convert-async').length;
+            let totalRequests = syncCount + asyncCount || 1;
+
+            let syncPercent = Math.round((syncCount / totalRequests) * 100);
+            let asyncPercent = Math.round((asyncCount / totalRequests) * 100);
+
+            document.getElementById('kpi-modes-container').innerHTML = `
+                <div class="kpi-bar-row">
+                    <div class="kpi-bar-label"><span>Synchronous (/convert)</span><span>${syncCount} (${syncPercent}%)</span></div>
+                    <div class="kpi-bar-outer"><div class="kpi-bar-inner" style="width: ${syncPercent}%; background:#6366f1;"></div></div>
+                </div>
+                <div class="kpi-bar-row">
+                    <div class="kpi-bar-label"><span>Asynchronous (/convert-async)</span><span>${asyncCount} (${asyncPercent}%)</span></div>
+                    <div class="kpi-bar-outer"><div class="kpi-bar-inner" style="width: ${asyncPercent}%; background:#10b981;"></div></div>
+                </div>
+            `;
+
+            // KPI 2: Webhooks Processed
+            let webhooks = cachedJobs.filter(j => j.job_type === 'Webhook');
+            let successWebhooks = webhooks.filter(j => j.status === 'Success').length;
+            let failedWebhooks = webhooks.filter(j => j.status === 'Failed').length;
+            let totalWebhooks = webhooks.length || 1;
+
+            let successRate = Math.round((successWebhooks / totalWebhooks) * 100);
+            document.getElementById('kpi-webhook-rate').innerText = `${successRate}% Ok`;
+            if (successRate < 90) {
+                document.getElementById('kpi-webhook-rate').style.color = 'var(--error)';
+            } else {
+                document.getElementById('kpi-webhook-rate').style.color = 'var(--success)';
+            }
+
+            let webOkPercent = Math.round((successWebhooks / totalWebhooks) * 100);
+            let webFailPercent = Math.round((failedWebhooks / totalWebhooks) * 100);
+
+            document.getElementById('kpi-webhooks-container').innerHTML = `
+                <div class="kpi-bar-row">
+                    <div class="kpi-bar-label"><span>Webhook Deliveries Success</span><span>${successWebhooks}</span></div>
+                    <div class="kpi-bar-outer"><div class="kpi-bar-inner" style="width: ${webOkPercent}%; background:#10b981;"></div></div>
+                </div>
+                <div class="kpi-bar-row">
+                    <div class="kpi-bar-label"><span>Webhook Deliveries Failed</span><span>${failedWebhooks}</span></div>
+                    <div class="kpi-bar-outer"><div class="kpi-bar-inner" style="width: ${webFailPercent}%; background:#ef4444;"></div></div>
+                </div>
+            `;
+
+            // KPI 3: Format Pairs
+            let formatPairs = {};
+            cachedJobs.forEach(j => {
+                // Parse job_type (e.g. "Convert (Sync: oga -> mp3)")
+                if (j.job_type.includes('->')) {
+                    let parts = j.job_type.split(':');
+                    if (parts.length > 1) {
+                        let pair = parts[1].replace(')', '').trim();
+                        formatPairs[pair] = (formatPairs[pair] || 0) + 1;
+                    }
+                }
+            });
+
+            // Sort and grab top 3
+            let sortedPairs = Object.entries(formatPairs)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 3);
+
+            let maxCount = sortedPairs.length > 0 ? sortedPairs[0][1] : 1;
+            let pairsHTML = '';
+
+            if (sortedPairs.length === 0) {
+                pairsHTML = '<div class="kpi-bar-label" style="color:var(--text-muted);">No conversion pairs recorded yet.</div>';
+            } else {
+                sortedPairs.forEach(([pair, count]) => {
+                    let pct = Math.round((count / maxCount) * 100);
+                    pairsHTML += `
+                        <div class="kpi-bar-row">
+                            <div class="kpi-bar-label"><span>${pair}</span><span>${count} jobs</span></div>
+                            <div class="kpi-bar-outer"><div class="kpi-bar-inner" style="width: ${pct}%; background:#818cf8;"></div></div>
+                        </div>
+                    `;
+                });
+            }
+            document.getElementById('kpi-pairs-container').innerHTML = pairsHTML;
+        }
+
         async function fetchDashboardData() {
             try {
                 const response = await fetch('/api/dashboard');
                 if (!response.ok) return;
                 const data = await response.json();
                 
-                // Update cached variables
                 cachedMetrics = data.metrics || [];
                 cachedJobs = data.jobs || [];
 
@@ -1604,7 +1768,6 @@ async fn dashboard_page() -> Html<String> {
                 // Update Jobs Table
                 const tbody = document.getElementById('jobs-tbody');
                 tbody.innerHTML = '';
-                // Show latest first
                 data.jobs.reverse().forEach(job => {
                     const tr = document.createElement('tr');
                     const uuidShort = job.uuid.substring(0, 8) + '...';
@@ -1645,16 +1808,16 @@ async fn dashboard_page() -> Html<String> {
                     terminal.scrollTop = terminal.scrollHeight;
                 }
 
-                // Render or update charts
+                // Render or update charts & KPIs
                 updateMetricChart();
                 updateHeatmap();
+                updateKPIs();
 
             } catch (err) {
                 console.error("Dashboard poll error:", err);
             }
         }
 
-        // Poll every 2.0 seconds to keep performance lightweight
         setInterval(fetchDashboardData, 2000);
         fetchDashboardData();
     </script>
@@ -1771,7 +1934,10 @@ async fn run_queue_workers(
                     include_file,
                     retry_count,
                 } => {
-                    update_job_status(&dashboard_clone, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Processing", retry_count, None);
+                    let input_ext = Path::new(&input_path).extension().and_then(|s| s.to_str()).unwrap_or("unknown");
+                    let job_type_str = format!("Convert (Redis: {} -> {})", input_ext, output_format);
+                    update_job_status(&dashboard_clone, uuid.clone(), &job_type_str, "Processing", retry_count, None);
+                    
                     let out_path = format!("{}/{}.{}", storage_dir_clone, uuid, output_format);
                     let conversion_res = run_ffmpeg(
                         Path::new(&input_path),
@@ -1785,7 +1951,7 @@ async fn run_queue_workers(
                         
                         if next_retry >= max_retries {
                             // Max retries reached, trigger failure webhook
-                            update_job_status(&dashboard_clone, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Failed", max_retries, Some(e.to_string()));
+                            update_job_status(&dashboard_clone, uuid.clone(), &job_type_str, "Failed", max_retries, Some(e.to_string()));
                             let _ = tokio::fs::remove_file(&input_path).await;
                             let fail_job = Job {
                                 id: Uuid::new_v4().to_string(),
@@ -1802,7 +1968,7 @@ async fn run_queue_workers(
                             let _ = enqueue_job(&mut manager_clone, fail_job).await;
                         } else {
                             // Retry by enqueueing another conversion job
-                            update_job_status(&dashboard_clone, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Processing", next_retry, Some(e.to_string()));
+                            update_job_status(&dashboard_clone, uuid.clone(), &job_type_str, "Processing", next_retry, Some(e.to_string()));
                             let retry_job = Job {
                                 id: job.id,
                                 job_type: JobType::Convert {
@@ -1818,7 +1984,7 @@ async fn run_queue_workers(
                         }
                     } else {
                         // Success!
-                        update_job_status(&dashboard_clone, uuid.clone(), &format!("Convert (Redis: {})", output_format), "Success", retry_count, None);
+                        update_job_status(&dashboard_clone, uuid.clone(), &job_type_str, "Success", retry_count, None);
                         let _ = tokio::fs::remove_file(&input_path).await;
                         
                         // 1. Enqueue Webhook job
