@@ -22,3 +22,7 @@ redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 utoipa = { version = "4.2" }
 utoipa-swagger-ui = { version = "7.0", features = ["axum", "reqwest"] }
 chrono = { version = "0.4", features = ["serde"] }
+opentelemetry = { version = "0.21", features = ["trace"] }
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.14", features = ["http-proto", "reqwest-client"] }
+tracing-opentelemetry = { version = "0.22" }

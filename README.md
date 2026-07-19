@@ -81,6 +81,10 @@ MAX_RETRIES=3
 CLEANUP_HOURS=24
 STORAGE_DIR=./storage
 PUBLIC_URL=http://localhost
+
+# (Optional) OpenTelemetry (OTel) Configuration
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+TELEMETRY_API_KEY=your_telemetry_tool_api_key
 ```
 
 ---

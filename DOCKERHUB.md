@@ -94,3 +94,5 @@ curl -X POST http://localhost/convert-async \
 | `CLEANUP_HOURS` | Temp files lifetime / Horas antes de limpiar archivos | `24` |
 | `STORAGE_DIR` | Mount directory / Directorio de almacenamiento | `./storage` |
 | `PUBLIC_URL` | App public address / Dirección pública de descargas | `http://localhost` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (Optional) OpenTelemetry collector endpoint / Endpoint OTel | - |
+| `TELEMETRY_API_KEY` | (Optional) Telemetry platform API Key / Token de telemetría | - |

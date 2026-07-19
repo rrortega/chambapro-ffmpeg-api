@@ -20,6 +20,8 @@ use tokio::{fs::File, io::AsyncWriteExt, process::Command};
 use tokio_util::io::ReaderStream;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use utoipa::OpenApi;
 use chrono::TimeZone;
@@ -218,9 +220,40 @@ async fn main() -> anyhow::Result<()> {
         state: dashboard_state.clone(),
     };
 
-    tracing_subscriber::fmt()
-        .with_writer(move || writer.clone())
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(move || writer.clone());
+    let env_filter = EnvFilter::from_default_env().add_directive("info".parse().unwrap());
+
+    let telemetry_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .or_else(|_| std::env::var("TELEMETRY_ENDPOINT"))
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+
+    let telemetry_api_key = std::env::var("TELEMETRY_API_KEY")
+        .or_else(|_| std::env::var("OTEL_EXPORTER_OTLP_HEADERS"))
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+
+    let otel_layer = if let Some(endpoint) = telemetry_endpoint {
+        info!("OpenTelemetry endpoint configured at: {}. Initializing OTLP trace pipeline...", endpoint);
+        match init_otel_tracer(&endpoint, telemetry_api_key.as_deref()) {
+            Ok(layer) => {
+                info!("OpenTelemetry tracing layer successfully initialized.");
+                Some(layer)
+            }
+            Err(e) => {
+                warn!("Failed to initialize OpenTelemetry tracing layer: {:?}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .with(otel_layer)
         .init();
 
     let api_key = std::env::var("API_KEY").ok().filter(|s| !s.trim().is_empty());
@@ -321,6 +354,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 
+    opentelemetry::global::shutdown_tracer_provider();
     Ok(())
 }
 
@@ -2042,4 +2076,48 @@ mod tests {
         let res = download_file(&client, "http://invalid-url-12345.com", None, "out.tmp").await;
         assert!(res.is_err());
     }
+}
+
+fn init_otel_tracer<S>(
+    endpoint: &str,
+    api_key: Option<&str>,
+) -> Result<tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry_sdk::trace::Tracer>, anyhow::Error>
+where
+    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+{
+    use opentelemetry_otlp::WithExportConfig;
+    use std::collections::HashMap;
+
+    let mut headers = HashMap::new();
+    if let Some(key) = api_key {
+        headers.insert("x-otlp-api-key".to_string(), key.to_string());
+        headers.insert("api-key".to_string(), key.to_string());
+        if key.contains('=') {
+            for part in key.split(',') {
+                let kv: Vec<&str> = part.split('=').collect();
+                if kv.len() == 2 {
+                    headers.insert(kv[0].trim().to_string(), kv[1].trim().to_string());
+                }
+            }
+        }
+    }
+
+    let exporter = opentelemetry_otlp::new_exporter()
+        .http()
+        .with_endpoint(endpoint)
+        .with_headers(headers);
+
+    let tracer = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(exporter)
+        .with_trace_config(
+            opentelemetry_sdk::trace::config().with_resource(
+                opentelemetry_sdk::Resource::new(vec![
+                    opentelemetry::KeyValue::new("service.name", "chambapro-ffmpeg-api"),
+                ])
+            )
+        )
+        .install_batch(opentelemetry_sdk::runtime::Tokio)?;
+
+    Ok(tracing_opentelemetry::layer().with_tracer(tracer))
 }
