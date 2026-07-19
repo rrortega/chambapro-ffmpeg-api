@@ -425,7 +425,7 @@ pub async fn dashboard_page() -> Html<String> {
 
         <div class="card" style="height: 380px;">
             <div class="card-header">
-                <span>Activity (GitHub style)</span>
+                <span>Actividad últimos 30 días</span>
             </div>
             <div id="heatmap-chart" style="height: 280px;"></div>
         </div>
@@ -594,9 +594,15 @@ pub async fn dashboard_page() -> Html<String> {
                                 { from: 4, to: 7, name: 'Medium', color: '#006d32' },
                                 { from: 8, to: 12, name: 'High', color: '#26a641' },
                                 { from: 13, to: 1000, name: 'Very High', color: '#39d353' }
-                            ]
+                            ],
+                            legend: {
+                                show: false
+                            }
                         }
                     }
+                },
+                legend: {
+                    show: false
                 }
             };
 
