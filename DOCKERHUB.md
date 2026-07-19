@@ -1,8 +1,16 @@
 # Chambapro FFmpeg API 🚀
 
-High-performance, ultra-lightweight Rust-based API for audio and video conversion using FFmpeg. Designed for high concurrency, reliability, and scale.
+High-performance, ultra-lightweight Rust-based API for audio and video conversion using FFmpeg. Designed for high concurrency, reliability, and scale. Supports Redis task queues with automatic failover to local memory queues, OpenTelemetry tracing, and clean REST interfaces.
 
-> 🔗 **For interactive flowcharts, full benchmarks, and separate bilingual files, visit the [GitHub Repository](https://github.com/rrortega/chambapro-ffmpeg-api).**
+> 🔗 **For interactive architectural flowcharts, full performance benchmarks, and separate bilingual files, visit the [GitHub Repository](https://github.com/rrortega).**
+
+---
+
+## ✨ Features / Características
+- **Dual Async Processing**: Runs high-throughput task queues via Redis, with automatic graceful fallback to local background threads if Redis is offline.
+- **Bilingual OpenAPI Docs**: Full interactive Swagger UI available out of the box at `/docs`.
+- **Telemetry & Monitoring**: Native OpenTelemetry integration exporting to standard OTLP backends (e.g., Datadog, Honeycomb, New Relic) and an interactive live dashboard.
+- **Robust Failure Recovery**: Conversion retries with exponential backoff, temporary file retention limits, and automated 30-day metrics cleanup.
 
 ---
 
@@ -11,20 +19,22 @@ High-performance, ultra-lightweight Rust-based API for audio and video conversio
 ### 1. Run with Docker
 ```bash
 docker run -d -p 80:80 \
+  -v $(pwd)/storage:/app/storage \
   -e REDIS_URL=redis://your-redis-host:6379 \
+  -e PUBLIC_URL=http://your-server-ip \
   rrortega/chambapro-ffmpeg-api:latest
 ```
 
 ### 2. API Endpoints
 - `GET /` - Redirects to Swagger UI documentation at `/docs`.
 - `GET /docs` - Serves the interactive Swagger UI.
-- `GET /health` - Returns `OK`.
-- `POST /convert` - **Synchronous** conversion. Returns file directly.
-- `POST /convert-async` - **Asynchronous** conversion. Requires a `callback_url`. Enqueues jobs in Redis (if configured) or executes in background (no Redis).
-- `GET /download/:file_name` - Downloads converted files.
-- `GET /dashboard` - Serves a beautiful, real-time web dashboard for queue status and stdout logs.
-- `POST /admin/cleanup` - Manually triggers cleanup of old temporary files in storage.
-
+- `GET /health` - Returns `OK` for health checks.
+- `POST /convert` - **Synchronous** conversion. Returns the output file directly in the response.
+- `POST /convert-async` - **Asynchronous** conversion. Callback URL is optional. Returns `202 Accepted` with a job `uuid`.
+- `GET /status/:uuid` - Returns real-time job status and output `download_url` once completed.
+- `GET /download/:file_name` - Downloads converted files from the storage mount.
+- `GET /dashboard` - Interactive web dashboard showing real-time metrics and live container stdout logs.
+- `POST /admin/cleanup` - Manually triggers cleanup of temporary files in storage.
 
 ### 3. Usage Examples
 **Synchronous Conversion:**
@@ -35,12 +45,18 @@ curl -X POST http://localhost/convert \
   --output output.mp3
 ```
 
-**Asynchronous Conversion via Webhook:**
+**Asynchronous Conversion (Polling style):**
 ```bash
 curl -X POST http://localhost/convert-async \
-  -F "url=https://example.com/audio.oga" \
-  -F "output_format=mp3" \
-  -F "callback_url=https://your-webhook.com/callback"
+  -F "file=@input.wav" \
+  -F "output_format=mp3"
+```
+Response:
+```json
+{
+  "uuid": "7a94dfbd-5b0c-4464-9b2f-3b2d6a5c2f9d",
+  "enqueue": true
+}
 ```
 
 ---
@@ -50,19 +66,21 @@ curl -X POST http://localhost/convert-async \
 ### 1. Correr con Docker
 ```bash
 docker run -d -p 80:80 \
+  -v $(pwd)/storage:/app/storage \
   -e REDIS_URL=redis://tu-servidor-redis:6379 \
+  -e PUBLIC_URL=http://ip-de-tu-servidor \
   rrortega/chambapro-ffmpeg-api:latest
 ```
 
 ### 2. Endpoints de la API
 - `GET /` - Redirige a la interfaz de Swagger UI en `/docs`.
 - `GET /docs` - Sirve la documentación interactiva de Swagger UI.
-- `GET /health` - Retorna `OK`.
+- `GET /health` - Retorna `OK` para chequeos de salud.
 - `POST /convert` - Conversión **síncrona**. Retorna el archivo en la respuesta.
 - `POST /convert-async` - Conversión **asíncrona** (con `callback_url` opcional). Retorna `202 Accepted` con el UUID para consulta.
 - `GET /status/:uuid` - Consulta en tiempo real del estado y link de descarga del trabajo.
-- `GET /download/:file_name` - Descarga de archivos convertidos.
-- `GET /dashboard` - Sirve un panel interactivo en tiempo real para visualizar colas y logs.
+- `GET /download/:file_name` - Descarga de archivos convertidos del volumen persistente.
+- `GET /dashboard` - Sirve un panel interactivo en tiempo real para visualizar colas, estadísticas y logs.
 - `POST /admin/cleanup` - Desencadena manualmente la depuración de archivos antiguos.
 
 ### 3. Ejemplos de Uso
@@ -74,7 +92,7 @@ curl -X POST http://localhost/convert \
   --output output.mp3
 ```
 
-**Conversión Asíncrona vía Webhook:**
+**Conversión Asíncrona con Webhook:**
 ```bash
 curl -X POST http://localhost/convert-async \
   -F "url=https://ejemplo.com/audio.oga" \
