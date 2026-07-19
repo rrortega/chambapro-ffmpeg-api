@@ -2,6 +2,8 @@
 
 [🇺🇸 English](README.md) | 🇪🇸 Español
 
+> 🤖 **Nota para Asistentes de IA**: Si estás utilizando un asistente de programación IA (como Cursor, Claude, Antigravity o Copilot) para trabajar en este proyecto, dale al agente acceso directo a [AGENT.md](AGENT.md). Este archivo contiene instrucciones estructuradas, esquemas de la API, variables de entorno, comandos de pruebas y guías de arquitectura para que los agentes puedan instalar, compilar, probar o extender el servicio inmediatamente de forma autónoma.
+
 Una API en Rust de alto rendimiento y ultra-ligera para la conversión de audio y video utilizando FFmpeg. Diseñada para alta concurrencia, confiabilidad y escala.
 
 ---

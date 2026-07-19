@@ -2,6 +2,8 @@
 
 🇺🇸 English | [🇪🇸 Español](README.es.md)
 
+> 🤖 **AI Coding Assistant Note**: If you are using an AI coding assistant (like Cursor, Claude, Antigravity, or Copilot) to interact with this codebase, give the agent access to [AGENT.md](AGENT.md). This file contains exact instructions, API schemas, environment setups, testing workflows, and codebase blueprints for AI agents to instantly install, run, or extend this service.
+
 A high-performance, ultra-lightweight Rust-based API for audio and video conversion using FFmpeg. Designed for high concurrency, reliability, and scale.
 
 ---
