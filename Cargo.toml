@@ -29,6 +29,7 @@ tracing-opentelemetry = { version = "0.22" }
 
 [dev-dependencies]
 cucumber = { version = "0.20", features = ["macros"] }
+tower = { version = "0.4", features = ["util"] }
 
 [[test]]
 name = "cucumber_tests"

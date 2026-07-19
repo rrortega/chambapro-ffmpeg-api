@@ -21,7 +21,7 @@ use tracing_subscriber::prelude::*;
 use utoipa::OpenApi;
 
 use models::{AppState, DashboardLogWriter, SharedDashboardState, track_metrics};
-use routes::{health_check, convert_media, convert_media_async, download_file_endpoint, admin_cleanup_endpoint};
+use routes::{health_check, convert_media, convert_media_async, download_file_endpoint, admin_cleanup_endpoint, get_job_status};
 use dashboard::{dashboard_page, dashboard_api, perform_directory_cleanup, load_dashboard_from_disk};
 use worker::run_queue_workers;
 use telemetry::init_otel_tracer;
@@ -33,7 +33,8 @@ use telemetry::init_otel_tracer;
         routes::convert_media,
         routes::convert_media_async,
         routes::download_file_endpoint,
-        routes::admin_cleanup_endpoint
+        routes::admin_cleanup_endpoint,
+        routes::get_job_status
     ),
     info(
         title = "Chambapro FFmpeg API",
@@ -177,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/convert-async", post(convert_media_async))
         .route("/download/:file_name", get(download_file_endpoint))
         .route("/admin/cleanup", post(admin_cleanup_endpoint))
+        .route("/status/:uuid", get(get_job_status))
         .route("/dashboard", get(dashboard_page))
         .route("/api/dashboard", get(dashboard_api))
         .layer(middleware::from_fn_with_state(state.clone(), track_metrics))
@@ -210,5 +212,43 @@ mod tests {
         let client = Client::new();
         let res = worker::download_file(&client, "http://invalid-url-12345.com", None, "out.tmp").await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_status_endpoint_non_existent_uuid() {
+        use axum::http::Request;
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let state = AppState {
+            http_client: Client::new(),
+            api_key: None,
+            redis_manager: None,
+            storage_dir: "./storage".to_string(),
+            host_url: "http://localhost".to_string(),
+            max_retries: 3,
+            cleanup_hours: 24,
+            dashboard: SharedDashboardState(Arc::new(RwLock::new(models::DashboardState {
+                jobs: Vec::new(),
+                logs: Vec::new(),
+                metrics: Vec::new(),
+            }))),
+        };
+
+        let app = Router::new()
+            .route("/status/:uuid", get(get_job_status))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/status/non-existent-uuid-1234")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 }

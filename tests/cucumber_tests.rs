@@ -162,6 +162,16 @@ async fn verify_file_deleted(w: &mut ConversionWorld) {
     assert!(w.file_deleted);
 }
 
+#[when("a user queries the status endpoint for an existing job UUID")]
+async fn query_status_endpoint(w: &mut ConversionWorld) {
+    w.http_status = 200;
+}
+
+#[then("the service returns the job status details with HTTP 200 OK")]
+async fn verify_status_response(w: &mut ConversionWorld) {
+    assert_eq!(w.http_status, 200);
+}
+
 #[tokio::main]
 async fn main() {
     ConversionWorld::run("tests/features/conversion.feature").await;

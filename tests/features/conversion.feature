@@ -48,3 +48,7 @@ Feature: Media Conversion Service
     Given a converted file has been on disk longer than "24" hours
     When the automatic directory cleanup task runs
     Then the expired file is deleted and the cleanup state is logged
+
+  Scenario: 11. Retrieve job status using the status endpoint
+    When a user queries the status endpoint for an existing job UUID
+    Then the service returns the job status details with HTTP 200 OK

@@ -471,3 +471,58 @@ pub async fn admin_cleanup_endpoint(
 
     Ok((StatusCode::OK, "Cleanup completed successfully").into_response())
 }
+
+#[utoipa::path(
+    get,
+    path = "/status/{uuid}",
+    responses(
+        (status = 200, description = "Status of the media conversion job", body = serde_json::Value),
+        (status = 404, description = "Job not found")
+    ),
+    params(
+        ("uuid" = String, Path, description = "The UUID of the enqueued conversion job")
+    )
+)]
+pub async fn get_job_status(
+    State(state): State<AppState>,
+    AxumPath(uuid): AxumPath<String>,
+) -> Result<Response, AppError> {
+    let job_opt = if let Ok(db) = state.dashboard.0.read() {
+        db.jobs.iter().find(|j| j.uuid == uuid).cloned()
+    } else {
+        None
+    };
+
+    let job = match job_opt {
+        Some(j) => j,
+        None => return Ok((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Job not found" }))).into_response()),
+    };
+
+    let download_url = if job.status == "Success" {
+        if let Some(pos) = job.job_type.rfind("-> ") {
+            let ext = job.job_type.get(pos + 3..).map(|s| s.trim_matches(')').trim());
+            if let Some(e) = ext {
+                Some(format!("{}/download/{}.{}", state.host_url, job.uuid, e))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "uuid": job.uuid,
+            "job_type": job.job_type,
+            "status": job.status,
+            "retries": job.retries,
+            "error": job.error,
+            "timestamp": job.timestamp,
+            "download_url": download_url
+        })),
+    ).into_response())
+}
