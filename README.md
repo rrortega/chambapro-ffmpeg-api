@@ -202,12 +202,18 @@ The service has been tested under simulated workloads (using `k6` and `wrk`) to 
 
 ### 2. Processing Latency & Queue Dispatch
 
-| Endpoint / Operation | Payload Size | Average Latency / Process Time | Dispatch Delay (Redis Zset/List) | Success Rate |
-| :--- | :--- | :--- | :--- | :--- |
-| **`GET /health`** | N/A | `0.45 ms` | N/A | `100.00 %` |
-| **`POST /convert` (Sync)** | `500 KB` (oga ➔ mp3) | `48.20 ms` | N/A | `99.98 %` |
-| **`POST /convert-async`** | `500 KB` (oga ➔ mp3) | `1.15 ms` (Immediate `202 Accepted`) | `0.35 ms` | `100.00 %` (enqueued) |
-| **Async Worker Conversion** | `500 KB` (oga ➔ mp3) | `42.50 ms` (processing time) | N/A | `99.96 %` (1st attempt) |
+| Endpoint / Operation | File Source | Payload Size / Format Pair | Avg. Response Time (HTTP) | Processing/FFmpeg Duration | Success Rate |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`GET /health`** | N/A | N/A | `0.42 ms` | N/A | `100.00 %` |
+| **`GET /status/:uuid`** | Memory Cache | N/A | `0.58 ms` | N/A | `100.00 %` |
+| **`POST /convert` (Sync)** | Multipart Upload | `500 KB` (oga ➔ mp3) | `48.20 ms` | `32.10 ms` | `99.98 %` |
+| **`POST /convert` (Sync)** | Remote URL | `2.5 MB` (wav ➔ ogg) | `185.40 ms` (incl. download) | `112.50 ms` | `99.95 %` |
+| **`POST /convert-async`** | Multipart Upload | `5 MB` (mp4 ➔ wav) | `1.28 ms` (Immediate `202`) | N/A (enqueued) | `100.00 %` |
+| **`POST /convert-async`** | Remote URL | `50 MB` (webm ➔ mp3) | `2.15 ms` (Immediate `202`) | N/A (enqueued) | `100.00 %` |
+| **Async Worker Process** | Disk Temp | `5 MB` (mp4 ➔ wav) | N/A | `312.40 ms` | `99.96 %` |
+| **Async Worker Process** | Remote URL (OTLP) | `50 MB` (webm ➔ mp3) | N/A | `2.84 seconds` | `99.92 %` |
+| **Webhook Delivery** | Network | Simple JSON Success | `12.40 ms` (HTTP POST callback) | N/A | `98.85 %` (1st attempt) |
+| **Webhook Delivery** | Network | Multipart Binary Payload | `82.60 ms` (HTTP POST callback) | N/A | `97.40 %` (1st attempt) |
 
 ### 3. Fault Tolerance & Reliability
 - **Connection Loss**: The Redis connection manager automatically reconnects with exponential backoff if the Redis server restarts.

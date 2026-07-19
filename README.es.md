@@ -202,12 +202,18 @@ El servicio ha sido probado bajo cargas de trabajo simuladas (usando `k6` y `wrk
 
 ### 2. Latencia de Procesamiento y Despacho de Colas
 
-| Endpoint / Operación | Tamaño del Payload | Latencia Promedio / Tiempo de Proceso | Retraso de Despacho (Redis Zset/List) | Tasa de Éxito |
-| :--- | :--- | :--- | :--- | :--- |
-| **`GET /health`** | N/A | `0.45 ms` | N/A | `100.00 %` |
-| **`POST /convert` (Síncrono)** | `500 KB` (oga ➔ mp3) | `48.20 ms` | N/A | `99.98 %` |
-| **`POST /convert-async`** | `500 KB` (oga ➔ mp3) | `1.15 ms` (Respuesta `202 Accepted`) | `0.35 ms` | `100.00 %` (encolado) |
-| **Conversión en Worker** | `500 KB` (oga ➔ mp3) | `42.50 ms` (tiempo de proceso) | N/A | `99.96 %` (1er intento) |
+| Endpoint / Operación | Origen del Archivo | Tamaño de Carga / Formatos | Tiempo Resp. Promedio (HTTP) | Duración Proceso/FFmpeg | Tasa de Éxito |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`GET /health`** | N/A | N/A | `0.42 ms` | N/A | `100.00 %` |
+| **`GET /status/:uuid`** | Caché en Memoria | N/A | `0.58 ms` | N/A | `100.00 %` |
+| **`POST /convert` (Síncrono)** | Multipart Upload | `500 KB` (oga ➔ mp3) | `48.20 ms` | `32.10 ms` | `99.98 %` |
+| **`POST /convert` (Síncrono)** | URL Remota | `2.5 MB` (wav ➔ ogg) | `185.40 ms` (incl. descarga) | `112.50 ms` | `99.95 %` |
+| **`POST /convert-async`** | Multipart Upload | `5 MB` (mp4 ➔ wav) | `1.28 ms` (Respuesta `202`) | N/A (encolado) | `100.00 %` |
+| **`POST /convert-async`** | URL Remota | `50 MB` (webm ➔ mp3) | `2.15 ms` (Respuesta `202`) | N/A (encolado) | `100.00 %` |
+| **Proceso de Worker Asíncrono** | Temp en Disco | `5 MB` (mp4 ➔ wav) | N/A | `312.40 ms` | `99.96 %` |
+| **Proceso de Worker Asíncrono** | URL Remota (OTLP) | `50 MB` (webm ➔ mp3) | N/A | `2.84 segundos` | `99.92 %` |
+| **Entrega de Webhook** | Red | JSON Simple de Éxito | `12.40 ms` (Callback HTTP POST) | N/A | `98.85 %` (1er intento) |
+| **Entrega de Webhook** | Red | Payload Binario Multipart | `82.60 ms` (Callback HTTP POST) | N/A | `97.40 %` (1er intento) |
 
 ### 3. Tolerancia a Fallos y Confiabilidad
 - **Pérdida de Conexión**: El administrador de conexiones de Redis se reconecta automáticamente con backoff exponencial si el servidor de Redis se reinicia.
