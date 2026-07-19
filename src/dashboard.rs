@@ -430,7 +430,7 @@ pub async fn dashboard_page() -> Html<String> {
 
         <div class="card" style="height: 380px;">
             <div class="card-header">
-                <span>Actividad últimos 30 días</span>
+                <span>Activity last 30 days</span>
             </div>
             <div id="heatmap-chart" style="height: 280px;"></div>
         </div>
@@ -548,40 +548,50 @@ pub async fn dashboard_page() -> Html<String> {
 
         function updateHeatmap() {
             const now = new Date();
-            const daysData = {};
-            
+            const days = [];
+            const matrix = {};
+
+            // Pre-fill last 30 days with 24 hours of 0s
             for (let i = 29; i >= 0; i--) {
                 const d = new Date();
                 d.setDate(now.getDate() - i);
                 const dayKey = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
-                daysData[dayKey] = 0;
+                const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                days.push({ key: dayKey, label: label });
+                matrix[dayKey] = {};
+                for (let h = 0; h < 24; h++) {
+                    matrix[dayKey][h] = 0;
+                }
             }
 
+            // Populate traffic matrix from cachedMetrics
             cachedMetrics.forEach(m => {
                 const date = new Date(m.timestamp);
                 const dayKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
-                if (daysData[dayKey] !== undefined) {
-                    daysData[dayKey] += 1;
+                const hour = date.getHours();
+                if (matrix[dayKey] !== undefined) {
+                    matrix[dayKey][hour] += 1;
                 }
             });
 
-            const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-            const series = daysOfWeek.map((dayName, idx) => {
-                const data = [];
-                for (let week = 0; week < 5; week++) {
-                    const d = new Date();
-                    d.setDate(now.getDate() - (4 - week) * 7 + (idx - now.getDay()));
-                    const dayKey = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
-                    const count = daysData[dayKey] || 0;
-                    data.push({ x: `W${week+1}`, y: count });
-                }
-                return { name: dayName, data: data };
-            });
+            // Series mapping: 24 series (hours) representing rows
+            const series = [];
+            for (let h = 23; h >= 0; h--) {
+                const hourData = [];
+                days.forEach(day => {
+                    const count = matrix[day.key][h] || 0;
+                    hourData.push({ x: day.label, y: count });
+                });
+                series.push({
+                    name: `${h.toString().padStart(2, '0')}:00`,
+                    data: hourData
+                });
+            }
 
             const options = {
                 series: series,
                 chart: {
-                    height: 280,
+                    height: 290,
                     type: 'heatmap',
                     toolbar: { show: false }
                 },
@@ -595,14 +605,32 @@ pub async fn dashboard_page() -> Html<String> {
                         colorScale: {
                             ranges: [
                                 { from: 0, to: 0, name: 'No activity', color: '#161b22' },
-                                { from: 1, to: 3, name: 'Low', color: '#0e4429' },
-                                { from: 4, to: 7, name: 'Medium', color: '#006d32' },
-                                { from: 8, to: 12, name: 'High', color: '#26a641' },
-                                { from: 13, to: 1000, name: 'Very High', color: '#39d353' }
+                                { from: 1, to: 2, name: 'Low', color: '#0e4429' },
+                                { from: 3, to: 5, name: 'Medium', color: '#006d32' },
+                                { from: 6, to: 9, name: 'High', color: '#26a641' },
+                                { from: 10, to: 1000, name: 'Very High', color: '#39d353' }
                             ],
                             legend: {
                                 show: false
                             }
+                        }
+                    }
+                },
+                xaxis: {
+                    labels: {
+                        show: true,
+                        rotate: -45,
+                        style: {
+                            fontSize: '9px',
+                            colors: '#888'
+                        }
+                    }
+                },
+                yaxis: {
+                    labels: {
+                        style: {
+                            fontSize: '9px',
+                            colors: '#888'
                         }
                     }
                 },
