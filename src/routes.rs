@@ -63,12 +63,18 @@ pub async fn convert_media(
     let mut headers_opt: Option<String> = None;
     let mut output_format = "mp3".to_string();
     let mut has_callback = false;
+    let mut input_ext = "unknown".to_string();
 
     while let Some(mut field) = multipart.next_field().await.unwrap_or(None) {
         let name = field.name().unwrap_or("").to_string();
         
         match name.as_str() {
             "file" => {
+                if let Some(file_name) = field.file_name() {
+                    if let Some(ext) = Path::new(file_name).extension().and_then(|s| s.to_str()) {
+                        input_ext = ext.to_string();
+                    }
+                }
                 let uuid = Uuid::new_v4().to_string();
                 let file_path = format!("{}/upload_{}", state.storage_dir, uuid);
                 let mut f = tokio::fs::File::create(&file_path).await?;
@@ -115,6 +121,18 @@ pub async fn convert_media(
         ).into_response());
     }
 
+    if let Some(url_str) = &url_opt {
+        if let Ok(parsed_url) = reqwest::Url::parse(url_str) {
+            if let Some(path_seg) = parsed_url.path_segments() {
+                if let Some(last_seg) = path_seg.last() {
+                    if let Some(ext) = Path::new(last_seg).extension().and_then(|s| s.to_str()) {
+                        input_ext = ext.to_string();
+                    }
+                }
+            }
+        }
+    }
+
     let input_path = if let Some(path) = input_file_opt {
         path
     } else if let Some(url) = url_opt {
@@ -129,7 +147,6 @@ pub async fn convert_media(
     let uuid = Uuid::new_v4().to_string();
     let out_path = format!("{}/{}.{}", state.storage_dir, uuid, output_format);
 
-    let input_ext = Path::new(&input_path).extension().and_then(|s| s.to_str()).unwrap_or("unknown");
     let job_type_str = format!("Convert (Sync: {} -> {})", input_ext, output_format);
 
     update_job_status(&state.dashboard, uuid.clone(), &job_type_str, "Processing", 0, None);
@@ -213,12 +230,18 @@ pub async fn convert_media_async(
     let mut callback_url_opt: Option<String> = None;
     let mut output_format = "mp3".to_string();
     let mut include_file = false;
+    let mut input_ext = "unknown".to_string();
 
     while let Some(mut field) = multipart.next_field().await.unwrap_or(None) {
         let name = field.name().unwrap_or("").to_string();
         
         match name.as_str() {
             "file" => {
+                if let Some(file_name) = field.file_name() {
+                    if let Some(ext) = Path::new(file_name).extension().and_then(|s| s.to_str()) {
+                        input_ext = ext.to_string();
+                    }
+                }
                 let uuid = Uuid::new_v4().to_string();
                 let file_path = format!("{}/upload_{}", state.storage_dir, uuid);
                 let mut f = tokio::fs::File::create(&file_path).await?;
@@ -266,6 +289,18 @@ pub async fn convert_media_async(
         None => return Ok((StatusCode::BAD_REQUEST, "Missing 'callback_url' field").into_response()),
     };
 
+    if let Some(url_str) = &url_opt {
+        if let Ok(parsed_url) = reqwest::Url::parse(url_str) {
+            if let Some(path_seg) = parsed_url.path_segments() {
+                if let Some(last_seg) = path_seg.last() {
+                    if let Some(ext) = Path::new(last_seg).extension().and_then(|s| s.to_str()) {
+                        input_ext = ext.to_string();
+                    }
+                }
+            }
+        }
+    }
+
     let input_path = if let Some(path) = input_file_opt {
         path
     } else if let Some(url) = url_opt {
@@ -278,7 +313,6 @@ pub async fn convert_media_async(
     };
 
     let uuid = Uuid::new_v4().to_string();
-    let input_ext = Path::new(&input_path).extension().and_then(|s| s.to_str()).unwrap_or("unknown");
 
     if let Some(mut manager) = state.redis_manager {
         let job_type_str = format!("Convert (Redis: {} -> {})", input_ext, output_format);
