@@ -371,7 +371,12 @@ pub async fn dashboard_page() -> Html<String> {
 
     <header>
         <h1>Chambapro FFmpeg API 🚀</h1>
-        <div class="badge-live">LIVE FEED</div>
+        <div style="display: flex; align-items: center; gap: 1.25rem;">
+            <a href="/docs" style="color: var(--text-muted); text-decoration: none; font-size: 0.95rem; font-weight: 600; transition: color 0.3s; display: flex; align-items: center; gap: 0.35rem;" onmouseover="this.style.color='var(--primary)'" onmouseout="this.style.color='var(--text-muted)'">
+                📚 API Docs
+            </a>
+            <div class="badge-live">LIVE FEED</div>
+        </div>
     </header>
 
     <div class="stats-grid">
