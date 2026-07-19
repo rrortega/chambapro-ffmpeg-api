@@ -14,6 +14,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 1.5. Configura Rust y ejecuta los tests
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Run cargo test
+        run: cargo test
+
       # 2. Inicia sesión en Docker Hub usando los secretos configurados
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
