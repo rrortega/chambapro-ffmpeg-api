@@ -49,6 +49,12 @@ sequenceDiagram
 
 ---
 
+## 📸 Dashboard Interface
+
+![Chambapro FFmpeg Dashboard](dashboard.png)
+
+---
+
 ## ✨ Features & Architecture
 
 Built with the modern Rust ecosystem to ensure maximum performance and safety:

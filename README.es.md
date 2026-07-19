@@ -49,6 +49,12 @@ sequenceDiagram
 
 ---
 
+## 📸 Interfaz del Panel de Control (Dashboard)
+
+![Chambapro FFmpeg Dashboard](dashboard.png)
+
+---
+
 ## ✨ Características y Arquitectura
 
 Desarrollado sobre el ecosistema moderno de Rust para garantizar máximo rendimiento y seguridad:
