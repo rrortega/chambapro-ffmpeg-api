@@ -4,6 +4,10 @@
 
 > 🤖 **Nota para Asistentes de IA**: Si estás utilizando un asistente de programación IA (como Cursor, Claude, Antigravity o Copilot) para trabajar en este proyecto, dale al agente acceso directo a [AGENT.md](AGENT.md). Este archivo contiene instrucciones estructuradas, esquemas de la API, variables de entorno, comandos de pruebas y guías de arquitectura para que los agentes puedan instalar, compilar, probar o extender el servicio inmediatamente de forma autónoma.
 
+**💡 ¿Por qué existe esto? (Caso de Uso Real)**
+Cuando los usuarios envían mensajes de voz en plataformas como WhatsApp o Facebook Messenger integradas mediante sistemas como **ManyChat, yCloud o Kaypso**, los archivos de audio se entregan en formatos nativos `.oga` o `.ogg`. Sin embargo, los servicios de transcripción de voz a texto (STT) como **OpenAI Whisper** tienen un desempeño significativamente más rápido y ofrecen mayor precisión cuando procesan archivos tradicionales en formato `.mp3`.
+Esta API actúa como un proxy de procesamiento multimedia ultra rápido y de alta concurrencia: intercepta los audios `.oga`/`.ogg` entrantes, los convierte a `.mp3` en milisegundos y los entrega de forma directa a tus motores de transcripción, funcionando como el puente crítico y confiable para integraciones con chatbots de IA/LLM.
+
 Una API en Rust de alto rendimiento y ultra-ligera para la conversión de audio y video utilizando FFmpeg. Diseñada para alta concurrencia, confiabilidad y escala.
 
 ---

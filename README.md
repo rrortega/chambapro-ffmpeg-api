@@ -4,6 +4,10 @@
 
 > 🤖 **AI Coding Assistant Note**: If you are using an AI coding assistant (like Cursor, Claude, Antigravity, or Copilot) to interact with this codebase, give the agent access to [AGENT.md](AGENT.md). This file contains exact instructions, API schemas, environment setups, testing workflows, and codebase blueprints for AI agents to instantly install, run, or extend this service.
 
+**💡 Why does this exist? (Real-World Use Case)**
+When users send voice notes on platforms like WhatsApp or Facebook Messenger integrated via systems like **ManyChat, yCloud, or Kaypso**, the raw audio files are delivered in `.oga` or `.ogg` formats. However, Speech-to-Text (STT) services like **OpenAI Whisper** perform significantly faster and yield higher transcription accuracy when processing standard `.mp3` files.
+This API acts as an ultra-fast, high-throughput media pipeline proxy that intercepts incoming `.oga`/`.ogg` voice notes, converts them to `.mp3` in milliseconds, and feeds them directly into your Speech-to-Text pipelines—serving as the critical, reliable bridge for LLM chatbot integrations.
+
 A high-performance, ultra-lightweight Rust-based API for audio and video conversion using FFmpeg. Designed for high concurrency, reliability, and scale.
 
 ---
