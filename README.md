@@ -176,3 +176,16 @@ When deploying this API in a clustered or multi-instance environment (e.g., Kube
   - **Docker Compose**: Use a shared named volume or host-bind mount.
   - **Kubernetes**: Mount a `PersistentVolumeClaim` with `ReadWriteMany` (RWX) access mode (e.g., using NFS, AWS EFS, or Ceph).
   - **Easypanel / Cloud providers**: Map a shared persistent directory or network drive across your app instances.
+
+---
+
+## 👤 Author & Contributor
+
+This project was designed, architected, and implemented by:
+
+* **Rolando Rodriguez Ortega**
+  * GitHub: [@rrortega](https://github.com/rrortega)
+  * Email: rolymayo11@gmail.com
+
+Feel free to open issues, submit pull requests, or leave a ⭐️ on the repository if this project was helpful to you!
+

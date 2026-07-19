@@ -176,3 +176,16 @@ Al desplegar esta API en entornos distribuidos o multi-instancia (ej. Kubernetes
   - **Docker Compose**: Utiliza un volumen nombrado compartido o un montaje de tipo bind.
   - **Kubernetes**: Monta un `PersistentVolumeClaim` con modo de acceso `ReadWriteMany` (RWX) (ej. mediante NFS, AWS EFS o Ceph).
   - **Easypanel / Nube**: Mapea un directorio persistente compartido o unidad de red a través de todas las instancias de tu aplicación.
+
+---
+
+## 👤 Autor y Colaborador
+
+Este proyecto fue diseñado, estructurado e implementado por:
+
+* **Rolando Rodriguez Ortega**
+  * GitHub: [@rrortega](https://github.com/rrortega)
+  * Correo Electrónico: rolymayo11@gmail.com
+
+¡No dudes en abrir incidencias (issues), enviar solicitudes de extracción (pull requests) o dejar una ⭐️ en el repositorio si este proyecto te resultó útil!
+

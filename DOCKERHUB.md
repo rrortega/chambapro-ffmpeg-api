@@ -96,3 +96,13 @@ curl -X POST http://localhost/convert-async \
 | `PUBLIC_URL` | App public address / Dirección pública de descargas | `http://localhost` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (Optional) OpenTelemetry collector endpoint / Endpoint OTel | - |
 | `TELEMETRY_API_KEY` | (Optional) Telemetry platform API Key / Token de telemetría | - |
+
+---
+
+## 👤 Author & Contributor / Autor y Colaborador
+
+Designed, architected, and implemented by / Diseñado, estructurado e implementado por:
+* **Rolando Rodriguez Ortega**
+  * GitHub: [@rrortega](https://github.com/rrortega)
+  * Email / Correo: rolymayo11@gmail.com
+  * Repository / Repositorio: [rrortega/chambapro-ffmpeg-api](https://github.com/rrortega/chambapro-ffmpeg-api)
