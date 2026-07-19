@@ -59,7 +59,8 @@ docker run -d -p 80:80 \
 - `GET /docs` - Sirve la documentación interactiva de Swagger UI.
 - `GET /health` - Retorna `OK`.
 - `POST /convert` - Conversión **síncrona**. Retorna el archivo en la respuesta.
-- `POST /convert-async` - Conversión **asíncrona**. Requiere un `callback_url`. Encola tareas en Redis (si está configurado) o procesa en segundo plano (sin Redis).
+- `POST /convert-async` - Conversión **asíncrona** (con `callback_url` opcional). Retorna `202 Accepted` con el UUID para consulta.
+- `GET /status/:uuid` - Consulta en tiempo real del estado y link de descarga del trabajo.
 - `GET /download/:file_name` - Descarga de archivos convertidos.
 - `GET /dashboard` - Sirve un panel interactivo en tiempo real para visualizar colas y logs.
 - `POST /admin/cleanup` - Desencadena manualmente la depuración de archivos antiguos.

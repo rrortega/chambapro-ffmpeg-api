@@ -105,15 +105,25 @@ Performs **synchronous** conversion. Returns the converted file directly in the 
 *Note: Returns `400 Bad Request` if a `callback_url` is supplied.*
 
 ### `POST /convert-async`
-Performs **asynchronous** conversion (requires `callback_url`). Returns `202 Accepted` with `{ "uuid": "...", "enqueue": true }` immediately.
+Performs **asynchronous** conversion. Returns `202 Accepted` with `{ "uuid": "...", "enqueue": true }` immediately.
 
 **Parameters (Multipart Form Data):**
 - `file` (optional): The media file to convert.
 - `url` (optional): A remote URL of the media file to download.
 - `output_format` (optional, default: `mp3`): Target format extension (e.g. `mp3`, `mp4`, `wav`).
 - `headers` (optional): Custom JSON headers to fetch the remote `url`.
-- `callback_url` (required): Webhook endpoint to notify upon completion.
+- `callback_url` (optional): Webhook endpoint to notify upon completion. If not provided, you can poll `/status/:uuid` for status updates.
 - `include_file` (optional, default: `false`): If `true`, the webhook sends the full binary file. If `false`, the webhook receives a success JSON containing the download link.
+
+### `GET /status/:uuid`
+Queries the real-time status and retrieval info of an asynchronous conversion job.
+**Response (JSON):**
+- `uuid`: Job UUID.
+- `job_type`: Job type description.
+- `status`: Current status (`Enqueued`, `Processing`, `Success`, or `Failed`).
+- `retries`: Number of attempts.
+- `error`: Error details if failed.
+- `download_url`: URL to download the converted file (only present if status is `Success`).
 
 ### `GET /download/:file_name`
 Downloads a converted file from storage (e.g. `/download/<uuid>.mp3`). Returns a clean error if the file has been cleaned up.

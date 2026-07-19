@@ -105,15 +105,25 @@ Realiza una conversión **síncrona**. Devuelve el archivo convertido directamen
 *Nota: Devuelve `400 Bad Request` si se proporciona un `callback_url`.*
 
 ### `POST /convert-async`
-Realiza una conversión **asíncrona** (requiere `callback_url`). Devuelve inmediatamente `202 Accepted` con `{ "uuid": "...", "enqueue": true }`.
+Realiza una conversión **asíncrona**. Devuelve inmediatamente `202 Accepted` con `{ "uuid": "...", "enqueue": true }`.
 
 **Parámetros (Multipart Form Data):**
 - `file` (opcional): El archivo multimedia a convertir.
 - `url` (opcional): URL remota del archivo multimedia a descargar.
 - `output_format` (opcional, por defecto: `mp3`): Extensión del formato de destino (ej. `mp3`, `mp4`, `wav`).
 - `headers` (opcional): Headers JSON personalizados para descargar desde la `url` remota.
-- `callback_url` (requerido): URL de webhook a la cual notificar al finalizar el proceso.
+- `callback_url` (opcional): URL de webhook a la cual notificar al finalizar el proceso. Si no se provee, se puede consultar el estado en `/status/:uuid`.
 - `include_file` (opcional, por defecto: `false`): Si es `true`, el webhook recibirá el archivo binario completo. Si es `false`, el webhook recibirá un JSON con el enlace de descarga.
+
+### `GET /status/:uuid`
+Consulta el estado en tiempo real y la información de descarga de un trabajo asíncrono.
+**Respuesta (JSON):**
+- `uuid`: UUID del trabajo.
+- `job_type`: Descripción del tipo de trabajo.
+- `status`: Estado actual (`Enqueued`, `Processing`, `Success`, o `Failed`).
+- `retries`: Número de intentos realizados.
+- `error`: Detalle del error si falló.
+- `download_url`: Enlace directo de descarga para el archivo resultante (solo presente en estado `Success`).
 
 ### `GET /download/:file_name`
 Descarga un archivo convertido del almacenamiento (ej. `/download/<uuid>.mp3`). Devuelve un error limpio si el archivo ya fue eliminado o no existe.
