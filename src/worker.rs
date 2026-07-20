@@ -289,6 +289,7 @@ pub async fn run_ffmpeg(input_path: &Path, output_path: &Path, format: &str) -> 
     info!("Running ffmpeg from {:?} to {:?} format {}", input_path, output_path, format);
     let output = Command::new("ffmpeg")
         .arg("-y")
+        .arg("-hide_banner")
         .arg("-i")
         .arg(input_path)
         .arg("-f")
@@ -299,8 +300,9 @@ pub async fn run_ffmpeg(input_path: &Path, output_path: &Path, format: &str) -> 
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        error!("ffmpeg failed: {}", stderr);
-        anyhow::bail!("ffmpeg conversion failed: {}", stderr);
+        let trimmed = stderr.trim();
+        error!("ffmpeg failed: {}", trimmed);
+        anyhow::bail!("ffmpeg conversion failed: {}", trimmed);
     }
     info!("ffmpeg conversion successful");
     Ok(())
