@@ -302,75 +302,120 @@ pub async fn download_file(
     Ok(())
 }
 
-async fn validate_input_file(path: &Path) -> anyhow::Result<()> {
-    info!("Running input integrity check (ffprobe) on file: {:?}", path);
+#[derive(serde::Deserialize, Debug)]
+struct ProbeOutput {
+    streams: Option<Vec<ProbeStream>>,
+    format: Option<ProbeFormat>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct ProbeStream {
+    codec_type: Option<String>,
+    sample_rate: Option<String>,
+    channels: Option<i32>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct ProbeFormat {
+    probe_score: Option<i32>,
+}
+
+async fn validate_file_metadata(path: &Path, require_audio: bool) -> anyhow::Result<()> {
     if !path.exists() {
-        error!("Input file does not exist at {:?}", path);
-        anyhow::bail!("Input file does not exist");
+        anyhow::bail!("File does not exist");
     }
 
     let output = Command::new("ffprobe")
         .arg("-v")
         .arg("error")
         .arg("-show_entries")
-        .arg("format=format_name")
+        .arg("format=probe_score:stream=channels,sample_rate,codec_type")
         .arg("-of")
-        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg("json")
         .arg(path)
         .output()
         .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let err_msg = stderr.trim();
-        error!("Input file integrity check failed: {}", err_msg);
-        anyhow::bail!("Invalid input media file: {}", err_msg);
+        anyhow::bail!("ffprobe failed: {}", stderr.trim());
     }
 
-    let format_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if format_name.is_empty() {
-        error!("Input file integrity check failed: format is undetermined");
-        anyhow::bail!("Invalid input media file: format undetermined");
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let probe: ProbeOutput = serde_json::from_str(&stdout_str)
+        .map_err(|e| anyhow::anyhow!("Failed to parse ffprobe JSON output: {}", e))?;
+
+    // Check probe score to protect against fake/empty files
+    if let Some(format) = probe.format {
+        if let Some(score) = format.probe_score {
+            if score < 20 {
+                anyhow::bail!("File media container matching confidence too low (probe_score: {})", score);
+            }
+        } else {
+            anyhow::bail!("Missing probe score in ffprobe metadata");
+        }
+    } else {
+        anyhow::bail!("Missing format section in ffprobe metadata");
     }
 
-    info!("Input file integrity check passed. Format: {}", format_name);
+    // Check streams
+    if let Some(streams) = probe.streams {
+        if streams.is_empty() {
+            anyhow::bail!("No media streams found in file");
+        }
+
+        let mut has_valid_stream = false;
+        for s in streams {
+            let matches_type = if require_audio {
+                s.codec_type.as_deref() == Some("audio")
+            } else {
+                s.codec_type.as_deref() == Some("audio") || s.codec_type.as_deref() == Some("video")
+            };
+
+            if matches_type {
+                let channels = s.channels.unwrap_or(0);
+                let sample_rate = s.sample_rate.as_deref()
+                    .and_then(|sr| sr.parse::<i32>().ok())
+                    .unwrap_or(0);
+
+                if channels > 0 && sample_rate > 0 {
+                    has_valid_stream = true;
+                    break;
+                }
+            }
+        }
+
+        if !has_valid_stream {
+            if require_audio {
+                anyhow::bail!("No valid audio stream with channels and sample rate found");
+            } else {
+                anyhow::bail!("No valid audio or video stream found");
+            }
+        }
+    } else {
+        anyhow::bail!("Missing streams section in ffprobe metadata");
+    }
+
+    Ok(())
+}
+
+async fn validate_input_file(path: &Path) -> anyhow::Result<()> {
+    info!("Running input integrity check (ffprobe) on file: {:?}", path);
+    if let Err(e) = validate_file_metadata(path, false).await {
+        error!("Input file integrity check failed: {}", e);
+        return Err(e);
+    }
+    info!("Input file integrity check passed.");
     Ok(())
 }
 
 async fn validate_output_audio_file(path: &Path) -> anyhow::Result<()> {
     info!("Running output audio validation check on file: {:?}", path);
-    if !path.exists() {
-        error!("Output file does not exist at {:?}", path);
-        anyhow::bail!("Output file does not exist");
+    if let Err(e) = validate_file_metadata(path, true).await {
+        error!("Output audio validation check failed: {}", e);
+        return Err(e);
     }
-
-    let output = Command::new("ffprobe")
-        .arg("-v")
-        .arg("error")
-        .arg("-select_streams")
-        .arg("a")
-        .arg("-show_entries")
-        .arg("stream=codec_type")
-        .arg("-of")
-        .arg("default=noprint_wrappers=1:nokey=1")
-        .arg(path)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let err_msg = stderr.trim();
-        error!("Output audio validation check failed: {}", err_msg);
-        anyhow::bail!("Invalid output file: {}", err_msg);
-    }
-
-    let codec_type = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !codec_type.contains("audio") {
-        error!("Output audio validation check failed: no audio stream found. Codec types: {}", codec_type);
-        anyhow::bail!("Output file is not a valid audio file (no audio stream found)");
-    }
-
-    info!("Output audio validation check passed. Audio stream detected successfully.");
+    info!("Output audio validation check passed.");
     Ok(())
 }
 
