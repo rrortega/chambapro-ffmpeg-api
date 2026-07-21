@@ -67,6 +67,10 @@ Built with the modern Rust ecosystem to ensure maximum performance and safety:
   - `/convert` handles synchronous requests (returns file directly). Blocked if `callback_url` is passed.
   - `/convert-async` handles asynchronous requests (requires `callback_url` and returns immediate queue status).
 - **Auto-retry Mechanism:** Conversions failing inside the Redis queue automatically retry up to `MAX_RETRIES` (default: 3) before reporting failure to the webhook.
+- **Input Integrity Validation (ffprobe):** Protects the system against corrupt or malformed uploads/downloads. Every file is analyzed using `ffprobe` prior to conversion; invalid files fail immediately to preserve resources.
+- **Output Audio Verification:** Post-conversion validation checks the output to ensure it contains a decodable audio stream (`select_streams a`). Corrupt output files are auto-deleted.
+- **Persistent Logs & 48h Retention:** Application logs are stored under `storage/dashboard/logs/` and automatically rotated and cleaned up after 48 hours to prevent disk bloating.
+- **Interactive Log Search & Nav:** The live dashboard logs drawer includes a sticky bottom search bar supporting real-time yellow highlights, occurrence navigation (Previous/Next), and total match counts.
 - **Auto-cleanup Job:** Processed files are cached in a local storage directory and automatically removed after `CLEANUP_HOURS` (default: 24h) via Redis delayed sorted sets.
 - **MIME & Zero-Copy Streaming:** Files are streamed chunk-by-chunk to the client or webhook via `ReaderStream` to keep RAM usage flat.
 

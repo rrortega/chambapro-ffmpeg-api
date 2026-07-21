@@ -8,8 +8,10 @@ High-performance, ultra-lightweight Rust-based API for audio and video conversio
 
 ## ✨ Features / Características
 - **Dual Async Processing**: Runs high-throughput task queues via Redis, with automatic graceful fallback to local background threads if Redis is offline.
+- **Pre & Post Conversion Validation**: Built-in verification utilizing `ffprobe` to ensure uploaded/downloaded files are valid, and output files contain a decodable audio stream.
+- **Log Rotation & Disk Protection**: Appends execution logs to disk under `storage/dashboard/logs/` with an automatic 48-hour cleanup sweep to protect storage.
 - **Bilingual OpenAPI Docs**: Full interactive Swagger UI available out of the box at `/docs`.
-- **Telemetry & Monitoring**: Native OpenTelemetry integration exporting to standard OTLP backends (e.g., Datadog, Honeycomb, New Relic) and an interactive live dashboard.
+- **Telemetry & Monitoring**: Native OpenTelemetry integration exporting to standard OTLP backends (e.g., Datadog, Honeycomb, New Relic) and an interactive live dashboard with a real-time log search and highlight tool.
 - **Robust Failure Recovery**: Conversion retries with exponential backoff, temporary file retention limits, and automated 30-day metrics cleanup.
 
 ---

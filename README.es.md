@@ -67,6 +67,10 @@ Desarrollado sobre el ecosistema moderno de Rust para garantizar máximo rendimi
   - `/convert` maneja peticiones síncronas (devuelve el archivo directamente). Bloqueado si se envía un `callback_url`.
   - `/convert-async` maneja peticiones asíncronas (requiere `callback_url` y responde de inmediato con el estado de la cola).
 - **Mecanismo de Reintento Automático:** Las conversiones que fallen dentro de la cola de Redis se reintentarán automáticamente hasta `MAX_RETRIES` (por defecto: 3) antes de reportar el fallo al webhook.
+- **Validación de Integridad de Entrada (ffprobe):** Protege el sistema contra subidas o descargas corruptas o vacías. Cada archivo se verifica con `ffprobe` antes de convertir; las peticiones inválidas fallan de inmediato para ahorrar recursos.
+- **Verificación del Audio de Salida:** Validación posterior a la conversión que comprueba que el archivo generado contiene un flujo de audio decodificable (`select_streams a`). Los archivos de salida corruptos se borran automáticamente.
+- **Logs Persistentes y Retención de 48h:** Los logs de la aplicación se guardan en el directorio `storage/dashboard/logs/` y se depuran/rotan automáticamente al pasar las 48 horas para evitar el llenado de disco.
+- **Búsqueda Interactiva en Logs:** El panel de logs en tiempo real del dashboard incluye una barra de búsqueda fija en la parte inferior con resaltado en amarillo, navegación entre ocurrencias (Siguiente/Anterior) y contador de coincidencias.
 - **Tarea de Limpieza Automática:** Los archivos procesados se guardan localmente y se eliminan automáticamente después de `CLEANUP_HOURS` (por defecto: 24h) mediante sets ordenados diferidos en Redis.
 - **Streaming Eficiente sin Consumo de RAM:** Los archivos se transmiten al cliente o webhook en bloques mediante `ReaderStream` para mantener el uso de memoria bajo y plano.
 
