@@ -87,6 +87,7 @@ pub async fn run_queue_workers(
         let dashboard_clone = dashboard.clone();
 
         tokio::spawn(async move {
+            let task_start = std::time::Instant::now();
             info!("Processing Job ID {} of type {:?}", job.id, job.job_type);
             match job.job_type {
                 JobType::Convert {
@@ -108,9 +109,10 @@ pub async fn run_queue_workers(
                         &output_format,
                     ).await;
 
+                    let elapsed = task_start.elapsed();
                     if let Err(e) = conversion_res {
                         let next_retry = retry_count + 1;
-                        warn!("Conversion failed for UUID {} (attempt {}/{}): {:?}", uuid, next_retry, max_retries, e);
+                        warn!("Conversion failed for UUID {} (attempt {}/{}): {:?}. Total task duration: {:?}", uuid, next_retry, max_retries, e, elapsed);
                         
                         if next_retry >= max_retries {
                             update_job_status(&dashboard_clone, uuid.clone(), &job_type_str, "Failed", max_retries, Some(e.to_string()));
@@ -147,6 +149,7 @@ pub async fn run_queue_workers(
                         }
                     } else {
                         update_job_status(&dashboard_clone, uuid.clone(), &job_type_str, "Success", retry_count, None);
+                        info!("Redis job conversion succeeded for UUID {}. Total task duration: {:?}", uuid, elapsed);
                         let _ = tokio::fs::remove_file(&input_path).await;
                         
                         if !callback_url.is_empty() {
@@ -263,6 +266,9 @@ pub async fn download_file(
     headers_json: Option<&str>,
     dest_path: &str,
 ) -> anyhow::Result<()> {
+    info!("Starting download of remote file from URL: {}", url);
+    let start_time = std::time::Instant::now();
+
     let mut req = client.get(url);
     if let Some(h) = headers_json {
         let headers: HashMap<String, String> = serde_json::from_str(h)?;
@@ -273,7 +279,14 @@ pub async fn download_file(
 
     let mut res = req.send().await?;
     if !res.status().is_success() {
+        error!("Failed to download file from {}, HTTP status: {}", url, res.status());
         anyhow::bail!("Failed to download file, status: {}", res.status());
+    }
+
+    if let Some(len) = res.content_length() {
+        info!("Remote file size (Content-Length): {} bytes ({:.2} KB) from URL: {}", len, len as f64 / 1024.0, url);
+    } else {
+        info!("Remote file size is unknown (no Content-Length header) from URL: {}", url);
     }
 
     let mut f = File::create(dest_path).await?;
@@ -282,11 +295,95 @@ pub async fn download_file(
     }
     f.flush().await?;
 
+    let elapsed = start_time.elapsed();
+    let meta = tokio::fs::metadata(dest_path).await?;
+    info!("Successfully downloaded remote file. Destination: {:?}. Size on disk: {} bytes ({:.2} KB). Time elapsed: {:?}", dest_path, meta.len(), meta.len() as f64 / 1024.0, elapsed);
+
+    Ok(())
+}
+
+async fn validate_input_file(path: &Path) -> anyhow::Result<()> {
+    info!("Running input integrity check (ffprobe) on file: {:?}", path);
+    if !path.exists() {
+        error!("Input file does not exist at {:?}", path);
+        anyhow::bail!("Input file does not exist");
+    }
+
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg("format=format_name")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let err_msg = stderr.trim();
+        error!("Input file integrity check failed: {}", err_msg);
+        anyhow::bail!("Invalid input media file: {}", err_msg);
+    }
+
+    let format_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if format_name.is_empty() {
+        error!("Input file integrity check failed: format is undetermined");
+        anyhow::bail!("Invalid input media file: format undetermined");
+    }
+
+    info!("Input file integrity check passed. Format: {}", format_name);
+    Ok(())
+}
+
+async fn validate_output_audio_file(path: &Path) -> anyhow::Result<()> {
+    info!("Running output audio validation check on file: {:?}", path);
+    if !path.exists() {
+        error!("Output file does not exist at {:?}", path);
+        anyhow::bail!("Output file does not exist");
+    }
+
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("a")
+        .arg("-show_entries")
+        .arg("stream=codec_type")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let err_msg = stderr.trim();
+        error!("Output audio validation check failed: {}", err_msg);
+        anyhow::bail!("Invalid output file: {}", err_msg);
+    }
+
+    let codec_type = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !codec_type.contains("audio") {
+        error!("Output audio validation check failed: no audio stream found. Codec types: {}", codec_type);
+        anyhow::bail!("Output file is not a valid audio file (no audio stream found)");
+    }
+
+    info!("Output audio validation check passed. Audio stream detected successfully.");
     Ok(())
 }
 
 pub async fn run_ffmpeg(input_path: &Path, output_path: &Path, format: &str) -> anyhow::Result<()> {
     info!("Running ffmpeg from {:?} to {:?} format {}", input_path, output_path, format);
+
+    // 1. Validate input file before conversion
+    if let Err(e) = validate_input_file(input_path).await {
+        warn!("Input validation failed for {:?}: {}", input_path, e);
+        return Err(e);
+    }
+
+    // 2. Run conversion
     let output = Command::new("ffmpeg")
         .arg("-y")
         .arg("-hide_banner")
@@ -302,8 +399,17 @@ pub async fn run_ffmpeg(input_path: &Path, output_path: &Path, format: &str) -> 
         let stderr = String::from_utf8_lossy(&output.stderr);
         let trimmed = stderr.trim();
         error!("ffmpeg failed: {}", trimmed);
+        let _ = tokio::fs::remove_file(output_path).await;
         anyhow::bail!("ffmpeg conversion failed: {}", trimmed);
     }
+
+    // 3. Validate output file to ensure it's a valid audio file
+    if let Err(e) = validate_output_audio_file(output_path).await {
+        warn!("Output validation failed for {:?}: {}", output_path, e);
+        let _ = tokio::fs::remove_file(output_path).await;
+        return Err(e);
+    }
+
     info!("ffmpeg conversion successful");
     Ok(())
 }

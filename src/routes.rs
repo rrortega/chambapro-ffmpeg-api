@@ -14,7 +14,7 @@ use std::{
 };
 use tokio::{fs::File, io::AsyncWriteExt};
 use tokio_util::io::ReaderStream;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 #[utoipa::path(
@@ -41,6 +41,28 @@ pub async fn health_check() -> &'static str {
     )
 )]
 pub async fn convert_media(
+    state: State<AppState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Result<Response, AppError> {
+    let start_time = std::time::Instant::now();
+    info!("Incoming POST /convert request (Sync)");
+    
+    let res = convert_media_impl(state, headers, multipart).await;
+    let elapsed = start_time.elapsed();
+    
+    match &res {
+        Ok(response) => {
+            info!("POST /convert (Sync) request completed. HTTP status: {}. Total time elapsed: {:?}", response.status(), elapsed);
+        }
+        Err(err) => {
+            error!("POST /convert (Sync) request failed. Error: {:?}. Total time elapsed: {:?}", err.0, elapsed);
+        }
+    }
+    res
+}
+
+async fn convert_media_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
     mut multipart: Multipart,
@@ -207,6 +229,28 @@ pub async fn convert_media(
     )
 )]
 pub async fn convert_media_async(
+    state: State<AppState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Result<Response, AppError> {
+    let start_time = std::time::Instant::now();
+    info!("Incoming POST /convert-async request (Async)");
+    
+    let res = convert_media_async_impl(state, headers, multipart).await;
+    let elapsed = start_time.elapsed();
+    
+    match &res {
+        Ok(response) => {
+            info!("POST /convert-async (Async) request accepted. HTTP status: {}. Request processing duration: {:?}", response.status(), elapsed);
+        }
+        Err(err) => {
+            error!("POST /convert-async (Async) request failed. Error: {:?}. Total time: {:?}", err.0, elapsed);
+        }
+    }
+    res
+}
+
+async fn convert_media_async_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
     mut multipart: Multipart,
@@ -346,13 +390,15 @@ pub async fn convert_media_async(
         let uuid_clone = uuid.clone();
         
         tokio::spawn(async move {
+            let task_start = std::time::Instant::now();
             info!("Enqueued simple background task (No Redis) for UUID {}", uuid_clone);
             let out_path = format!("{}/{}.{}", storage_dir, uuid_clone, output_format);
             let res = run_ffmpeg(Path::new(&input_path), Path::new(&out_path), &output_format).await;
             let _ = tokio::fs::remove_file(&input_path).await;
 
+            let elapsed = task_start.elapsed();
              if let Err(e) = res {
-                error!("Simple background conversion failed for UUID {}: {:?}", uuid_clone, e);
+                error!("Simple background conversion failed for UUID {}: {:?}. Total task duration: {:?}", uuid_clone, e, elapsed);
                 update_job_status(&dashboard, uuid_clone.clone(), &job_type_str, "Failed", 0, Some(e.to_string()));
                 if !callback_url.is_empty() {
                     let _ = send_simple_webhook_error(&client, &callback_url, &uuid_clone, &e.to_string()).await;
@@ -361,6 +407,7 @@ pub async fn convert_media_async(
             }
 
             update_job_status(&dashboard, uuid_clone.clone(), &job_type_str, "Success", 0, None);
+            info!("Simple background conversion succeeded for UUID {}. Total task duration: {:?}", uuid_clone, elapsed);
 
             if !callback_url.is_empty() {
                 let webhook_res = if include_file {
@@ -402,10 +449,15 @@ pub async fn download_file_endpoint(
     State(state): State<AppState>,
     AxumPath(file_name): AxumPath<String>,
 ) -> Result<Response, AppError> {
+    let start_time = std::time::Instant::now();
+    info!("Incoming GET /download/{} request", file_name);
+
     let file_path = format!("{}/{}", state.storage_dir, file_name);
     let path = Path::new(&file_path);
 
     if !path.exists() || !path.is_file() {
+        let elapsed = start_time.elapsed();
+        warn!("GET /download/{} file not found. Total time: {:?}", file_name, elapsed);
         return Ok((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "File has been cleaned up or does not exist" })),
@@ -434,6 +486,9 @@ pub async fn download_file_endpoint(
         .header(header::CONTENT_LENGTH, meta.len())
         .body(body)
         .unwrap();
+
+    let elapsed = start_time.elapsed();
+    info!("GET /download/{} served successfully. Content-Type: {}, Size: {} bytes ({:.2} KB). Total time: {:?}", file_name, content_type, meta.len(), meta.len() as f64 / 1024.0, elapsed);
 
     Ok(response)
 }
@@ -487,6 +542,9 @@ pub async fn get_job_status(
     State(state): State<AppState>,
     AxumPath(uuid): AxumPath<String>,
 ) -> Result<Response, AppError> {
+    let start_time = std::time::Instant::now();
+    info!("Incoming GET /status/{} request", uuid);
+
     let job_opt = if let Ok(db) = state.dashboard.0.read() {
         db.jobs.iter().find(|j| j.uuid == uuid).cloned()
     } else {
@@ -495,7 +553,11 @@ pub async fn get_job_status(
 
     let job = match job_opt {
         Some(j) => j,
-        None => return Ok((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Job not found" }))).into_response()),
+        None => {
+            let elapsed = start_time.elapsed();
+            warn!("GET /status/{} job not found. Total time: {:?}", uuid, elapsed);
+            return Ok((StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Job not found" }))).into_response());
+        }
     };
 
     let download_url = if job.status == "Success" {
@@ -512,6 +574,9 @@ pub async fn get_job_status(
     } else {
         None
     };
+
+    let elapsed = start_time.elapsed();
+    info!("GET /status/{} response sent successfully. Job Status: {}. Total time: {:?}", uuid, job.status, elapsed);
 
     Ok((
         StatusCode::OK,

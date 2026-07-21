@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
 
     let writer = DashboardLogWriter {
         state: dashboard_state.clone(),
+        storage_dir: storage_dir.clone(),
     };
 
     let fmt_layer = tracing_subscriber::fmt::layer()
@@ -205,6 +206,19 @@ mod tests {
     async fn test_ffmpeg_wrapper_missing_file() {
         let res = worker::run_ffmpeg(Path::new("non_existent.oga"), Path::new("out.mp3"), "mp3").await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ffmpeg_wrapper_corrupted_file() {
+        use std::io::Write;
+        let mut temp = tempfile::NamedTempFile::new().unwrap();
+        temp.write_all(&[0x04, 0x09, 0x02, 0x79, 0x00, 0x11]).unwrap();
+        let input_path = temp.path();
+        let output_path = std::env::temp_dir().join(format!("{}.mp3", uuid::Uuid::new_v4()));
+        
+        let res = worker::run_ffmpeg(input_path, &output_path, "mp3").await;
+        assert!(res.is_err());
+        assert!(!output_path.exists());
     }
 
     #[tokio::test]

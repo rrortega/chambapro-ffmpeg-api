@@ -119,8 +119,24 @@ pub async fn perform_directory_cleanup(
             }
         }
     }
-    if cleaned_count > 0 {
-        info!("Directory cleanup finished. Removed {} expired files.", cleaned_count);
+    // Clean up log files older than 48 hours
+    let logs_dir = format!("{}/dashboard/logs", storage_dir);
+    if let Ok(mut entries) = tokio::fs::read_dir(&logs_dir).await {
+        let max_log_age = std::time::Duration::from_secs(48 * 3600);
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(metadata) = entry.metadata().await {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(age) = now.duration_since(modified) {
+                            if age > max_log_age {
+                                let _ = tokio::fs::remove_file(&path).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let _ = perform_dashboard_disk_cleanup(storage_dir).await;

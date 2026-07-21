@@ -81,6 +81,7 @@ pub struct Job {
 #[derive(Clone)]
 pub struct DashboardLogWriter {
     pub state: Arc<RwLock<DashboardState>>,
+    pub storage_dir: String,
 }
 
 impl std::io::Write for DashboardLogWriter {
@@ -92,6 +93,20 @@ impl std::io::Write for DashboardLogWriter {
                 state.logs.remove(0);
             }
         }
+
+        // Also write to log files on disk
+        let logs_dir = format!("{}/dashboard/logs", self.storage_dir);
+        let _ = std::fs::create_dir_all(&logs_dir);
+        let now = chrono::Local::now();
+        let file_path = format!("{}/logs_{}.txt", logs_dir, now.format("%Y-%m-%d"));
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file_path)
+        {
+            let _ = file.write_all(buf);
+        }
+
         std::io::stdout().write(buf)
     }
 

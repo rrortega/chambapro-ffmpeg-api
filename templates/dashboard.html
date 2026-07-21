@@ -355,6 +355,37 @@
             outline: none;
             border-color: var(--primary);
         }
+
+        .log-search-container {
+            margin-top: 0.75rem;
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            padding-top: 0.75rem;
+        }
+
+        .log-search-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-main);
+            padding: 0.4rem 0.8rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: background 0.2s, border-color 0.2s;
+        }
+
+        .log-search-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: var(--primary-glow);
+        }
+
+        .search-match.active-match {
+            background-color: #fbbf24 !important;
+            color: #000 !important;
+            outline: 2px solid #fff;
+        }
     </style>
 </head>
 <body>
@@ -456,6 +487,12 @@
             <button class="drawer-close-btn" onclick="closeDrawer()">Collapse Drawer ✕</button>
         </div>
         <div id="log-terminal" class="terminal"></div>
+        <div class="log-search-container">
+            <input type="text" id="log-search-input" placeholder="Search logs (Enter for next, Shift+Enter for prev)..." style="flex-grow: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: var(--text-main); padding: 0.4rem 0.8rem; border-radius: 8px; font-family: inherit; font-size: 0.85rem;" oninput="renderLogs()" onkeydown="if(event.key==='Enter'){event.preventDefault(); navigateSearch(event.shiftKey ? -1 : 1);}" />
+            <button id="log-search-prev" class="log-search-btn" onclick="navigateSearch(-1)">Previous</button>
+            <button id="log-search-next" class="log-search-btn" onclick="navigateSearch(1)">Next</button>
+            <span id="log-search-status" style="font-size: 0.85rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; min-width: 60px; text-align: center;">0/0</span>
+        </div>
     </div>
 
     <script>
@@ -463,6 +500,10 @@
         let heatmapChartObj = null;
         let cachedMetrics = [];
         let cachedJobs = [];
+        let lastLogs = [];
+        let lastSearchQuery = "";
+        let currentMatchIdx = -1;
+        let matchElements = [];
 
         function openDrawer() {
             document.getElementById('logs-drawer').classList.add('open');
@@ -762,28 +803,11 @@
                     tbody.appendChild(tr);
                 });
 
-                const terminal = document.getElementById('log-terminal');
-                const wasScrolledToBottom = terminal.scrollHeight - terminal.clientHeight <= terminal.scrollTop + 1;
-                
-                terminal.innerHTML = '';
-                data.logs.forEach(line => {
-                    const div = document.createElement('div');
-                    div.className = 'log-line';
-                    
-                    if (line.includes('INFO')) {
-                        div.classList.add('log-info');
-                    } else if (line.includes('WARN')) {
-                        div.classList.add('log-warn');
-                    } else if (line.includes('ERROR')) {
-                        div.classList.add('log-error');
-                    }
-                    
-                    div.innerText = line.trim();
-                    terminal.appendChild(div);
-                });
-
-                if (wasScrolledToBottom) {
-                    terminal.scrollTop = terminal.scrollHeight;
+                const query = (document.getElementById('log-search-input')?.value || "").trim().toLowerCase();
+                const logsChanged = JSON.stringify(data.logs) !== JSON.stringify(lastLogs);
+                if (logsChanged || query !== lastSearchQuery) {
+                    lastLogs = data.logs || [];
+                    renderLogs();
                 }
 
                 updateMetricChart();
@@ -792,6 +816,109 @@
 
             } catch (err) {
                 console.error("Dashboard poll error:", err);
+            }
+        }
+
+        function renderLogs() {
+            const terminal = document.getElementById('log-terminal');
+            const wasScrolledToBottom = terminal.scrollHeight - terminal.clientHeight <= terminal.scrollTop + 1;
+            
+            terminal.innerHTML = '';
+            let matchCount = 0;
+            const query = (document.getElementById('log-search-input')?.value || "").trim().toLowerCase();
+            
+            lastLogs.forEach(line => {
+                const div = document.createElement('div');
+                div.className = 'log-line';
+                
+                if (line.includes('INFO')) {
+                    div.classList.add('log-info');
+                } else if (line.includes('WARN')) {
+                    div.classList.add('log-warn');
+                } else if (line.includes('ERROR')) {
+                    div.classList.add('log-error');
+                }
+                
+                let lineText = line.trim();
+                if (query) {
+                    // escape HTML special chars
+                    let escaped = lineText
+                        .replace(/&/g, "&amp;")
+                        .replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;");
+                    
+                    // Highlight query matches case-insensitively
+                    const regex = new RegExp(query.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
+                    
+                    let highlighted = escaped.replace(regex, (match) => {
+                        const idx = matchCount++;
+                        return `<mark class="search-match" data-match-idx="${idx}" style="background-color: yellow; color: black; font-weight: bold; padding: 0 2px; border-radius: 2px;">${match}</mark>`;
+                    });
+                    
+                    div.innerHTML = highlighted;
+                } else {
+                    div.innerText = lineText;
+                }
+                terminal.appendChild(div);
+            });
+
+            matchElements = Array.from(terminal.querySelectorAll('.search-match'));
+            
+            if (query !== lastSearchQuery) {
+                lastSearchQuery = query;
+                currentMatchIdx = matchElements.length > 0 ? 0 : -1;
+            } else {
+                if (currentMatchIdx >= matchElements.length) {
+                    currentMatchIdx = matchElements.length - 1;
+                }
+                if (matchElements.length > 0 && currentMatchIdx < 0) {
+                    currentMatchIdx = 0;
+                }
+            }
+
+            updateSearchUI();
+
+            if (wasScrolledToBottom && !query) {
+                terminal.scrollTop = terminal.scrollHeight;
+            }
+        }
+
+        function updateSearchUI() {
+            const statusSpan = document.getElementById('log-search-status');
+            if (!statusSpan) return;
+            
+            if (matchElements.length === 0) {
+                statusSpan.textContent = "0/0";
+                return;
+            }
+            
+            statusSpan.textContent = `${currentMatchIdx + 1}/${matchElements.length}`;
+            
+            matchElements.forEach((el, idx) => {
+                if (idx === currentMatchIdx) {
+                    el.style.backgroundColor = '#fbbf24';
+                    el.style.outline = '2px solid #fff';
+                    el.classList.add('active-match');
+                    
+                    if (document.activeElement !== document.getElementById('log-search-input')) {
+                        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                    }
+                } else {
+                    el.style.backgroundColor = 'yellow';
+                    el.style.outline = 'none';
+                    el.classList.remove('active-match');
+                }
+            });
+        }
+
+        function navigateSearch(direction) {
+            if (matchElements.length === 0) return;
+            currentMatchIdx = (currentMatchIdx + direction + matchElements.length) % matchElements.length;
+            updateSearchUI();
+            
+            const active = matchElements[currentMatchIdx];
+            if (active) {
+                active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }
         }
 
